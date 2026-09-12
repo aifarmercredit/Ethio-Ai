@@ -22,7 +22,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 DATABASE = "ethio_ai_users.db"
 
 
