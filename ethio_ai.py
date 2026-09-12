@@ -42,14 +42,23 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+
 MODEL = os.getenv(
     "GEMINI_MODEL",
     "gemini-3.6-flash"
 )
 
 DATABASE = "ethio_ai_users.db"
+
+
+# =========================================================
+# BOT INFORMATION
+# =========================================================
+
+BOT_USERNAME = "ethio_ai_gemini_bot"
+
+BOT_LINK = f"https://t.me/{BOT_USERNAME}"
 
 
 # =========================================================
@@ -82,6 +91,7 @@ if not ADMIN_ID_RAW:
 
 try:
     ADMIN_ID = int(ADMIN_ID_RAW)
+
 except ValueError:
     raise RuntimeError(
         "ADMIN_ID must be a number."
@@ -268,7 +278,6 @@ def is_premium(user_id):
         if expiry > datetime.now(timezone.utc):
             return True
 
-        # Premium expired
         conn = get_db()
         cursor = conn.cursor()
 
@@ -294,7 +303,10 @@ def is_premium(user_id):
         return False
 
 
-def set_premium(user_id, days=30):
+def set_premium(
+    user_id,
+    days=30
+):
 
     now = datetime.now(
         timezone.utc
@@ -317,16 +329,20 @@ def set_premium(user_id, days=30):
     if row and row["premium_until"]:
 
         try:
+
             old_expiry = datetime.fromisoformat(
                 row["premium_until"]
             )
 
             if old_expiry > now:
+
                 expiry = (
                     old_expiry
                     + timedelta(days=days)
                 )
+
             else:
+
                 expiry = (
                     now
                     + timedelta(days=days)
@@ -452,12 +468,28 @@ async def start(
 
         return
 
+    # -----------------------------------------------------
+    # MAIN BUTTONS
+    # -----------------------------------------------------
+
     keyboard = [
 
         [
             InlineKeyboardButton(
                 "⭐ Get Premium",
                 callback_data="get_premium"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "👥 Invite Friend",
+                url=(
+                    "https://t.me/share/url"
+                    "?url=https://t.me/ethio_ai_gemini_bot"
+                    "&text=🤖 Try Ethio AI - "
+                    "your intelligent AI assistant!"
+                )
             )
         ],
 
@@ -486,7 +518,8 @@ async def start(
         "💬 Ask questions\n"
         "🖼️ Send images\n"
         "🌍 Use Afaan Oromoo or English\n"
-        "⭐ Get Premium\n\n"
+        "⭐ Get Premium\n"
+        "👥 Invite your friends\n\n"
 
         "How can I help you?",
 
@@ -510,6 +543,16 @@ async def help_command(
         update.effective_user
     )
 
+    if is_blocked(
+        update.effective_user.id
+    ):
+
+        await update.message.reply_text(
+            "🚫 Your access has been blocked."
+        )
+
+        return
+
     await update.message.reply_text(
 
         "🤖 ETHIO AI — HELP\n\n"
@@ -519,7 +562,9 @@ async def help_command(
         "💬 Send a message\n"
         "🖼️ Send an image and ask a question\n"
         "🇪🇹 Afaan Oromoo supported\n"
-        "🇬🇧 English supported\n\n"
+        "🇬🇧 English supported\n"
+        "👥 Invite your friends\n"
+        "⭐ Get Premium\n\n"
 
         "Commands:\n"
         "/start - Start Ethio AI\n"
@@ -600,7 +645,7 @@ async def premium_menu(
 
 
 # =========================================================
-# SEND PREMIUM INVOICE
+# PREMIUM INVOICE
 # =========================================================
 
 async def get_premium(
@@ -664,7 +709,6 @@ async def get_premium(
             prices=prices,
 
             provider_token=""
-
         )
 
     except Exception:
@@ -843,6 +887,7 @@ Your name is Ethio AI.
 
 If the user asks:
 "What is your name?"
+
 Answer:
 "My name is Ethio AI."
 
@@ -851,21 +896,23 @@ answer:
 "I am powered by Google Gemini."
 
 Language rules:
+
 - If the user writes Afaan Oromoo,
   respond in Afaan Oromoo.
+
 - If the user writes English,
   respond in English.
+
 - If the user mixes Afaan Oromoo and English,
   respond naturally using the same style.
 
 Be helpful, accurate and clear.
 
 User message:
+
 {user_message}
 """
 
-        # Run synchronous Gemini request
-        # outside the Telegram event loop.
         response = await asyncio.to_thread(
 
             client.models.generate_content,
@@ -892,7 +939,6 @@ User message:
 
             return
 
-        # Telegram message limit
         for i in range(
             0,
             len(answer),
@@ -957,17 +1003,9 @@ async def image_chat(
 
     try:
 
-        # -------------------------------------------------
-        # TYPING
-        # -------------------------------------------------
-
         await update.effective_chat.send_action(
             action="typing"
         )
-
-        # -------------------------------------------------
-        # CHECK PHOTO
-        # -------------------------------------------------
 
         if not update.message.photo:
 
@@ -977,15 +1015,7 @@ async def image_chat(
 
             return
 
-        # -------------------------------------------------
-        # HIGHEST QUALITY PHOTO
-        # -------------------------------------------------
-
         photo = update.message.photo[-1]
-
-        # -------------------------------------------------
-        # DOWNLOAD PHOTO
-        # -------------------------------------------------
 
         telegram_file = await context.bot.get_file(
             photo.file_id
@@ -1002,10 +1032,6 @@ async def image_chat(
             )
 
             return
-
-        # -------------------------------------------------
-        # GEMINI PROMPT
-        # -------------------------------------------------
 
         prompt = f"""
 You are Ethio AI, an intelligent AI assistant.
@@ -1028,20 +1054,12 @@ User's question:
 {question}
 """
 
-        # -------------------------------------------------
-        # CREATE GEMINI IMAGE PART
-        # -------------------------------------------------
-
         image_part = types.Part.from_bytes(
 
             data=bytes(image_bytes),
 
             mime_type="image/jpeg"
         )
-
-        # -------------------------------------------------
-        # SEND IMAGE TO GEMINI
-        # -------------------------------------------------
 
         response = await asyncio.to_thread(
 
@@ -1054,10 +1072,6 @@ User's question:
                 image_part
             ]
         )
-
-        # -------------------------------------------------
-        # RESPONSE
-        # -------------------------------------------------
 
         answer = (
 
@@ -1077,10 +1091,6 @@ User's question:
             )
 
             return
-
-        # -------------------------------------------------
-        # SEND ANSWER
-        # -------------------------------------------------
 
         for i in range(
             0,
@@ -1279,9 +1289,7 @@ async def users_command(
     for row in rows:
 
         name = (
-
             row["first_name"]
-
             or "Unknown"
         )
 
@@ -1326,7 +1334,6 @@ async def users_command(
             f"{row['last_active']}\n\n"
         )
 
-        # Telegram message limit
         if len(text) > 3500:
 
             await update.message.reply_text(
@@ -1499,7 +1506,8 @@ async def premium_command(
         "⭐ Premium activated.\n\n"
 
         f"User ID: {target_id}\n"
-        f"Expires: {expiry.strftime('%Y-%m-%d %H:%M UTC')}"
+        f"Expires: "
+        f"{expiry.strftime('%Y-%m-%d %H:%M UTC')}"
     )
 
 
@@ -1693,9 +1701,12 @@ async def button_handler(
 
         return
 
+    # -----------------------------------------------------
+    # PREMIUM BUTTON
+    # -----------------------------------------------------
+
     if query.data == "get_premium":
 
-        # Send Premium invoice
         prices = [
 
             LabeledPrice(
@@ -1739,6 +1750,10 @@ async def button_handler(
 
         return
 
+    # -----------------------------------------------------
+    # HELP BUTTON
+    # -----------------------------------------------------
+
     if query.data == "help":
 
         await query.message.reply_text(
@@ -1748,7 +1763,9 @@ async def button_handler(
             "💬 Send me any question.\n"
             "🖼️ Send an image and ask me about it.\n"
             "🇪🇹 Afaan Oromoo supported.\n"
-            "🇬🇧 English supported.\n\n"
+            "🇬🇧 English supported.\n"
+            "👥 Invite your friends.\n"
+            "⭐ Get Premium.\n\n"
 
             "Commands:\n"
             "/start\n"
@@ -1795,7 +1812,14 @@ def main():
         f"Admin ID: {ADMIN_ID}"
     )
 
-    # Create Telegram application
+    logger.info(
+        f"Bot: @{BOT_USERNAME}"
+    )
+
+    # -----------------------------------------------------
+    # CREATE TELEGRAM APPLICATION
+    # -----------------------------------------------------
+
     app = (
         ApplicationBuilder()
         .token(TELEGRAM_TOKEN)
@@ -1803,7 +1827,7 @@ def main():
     )
 
     # -----------------------------------------------------
-    # COMMANDS
+    # USER COMMANDS
     # -----------------------------------------------------
 
     app.add_handler(
@@ -1881,7 +1905,7 @@ def main():
     )
 
     # -----------------------------------------------------
-    # PAYMENT
+    # TELEGRAM STARS PAYMENT
     # -----------------------------------------------------
 
     app.add_handler(
@@ -1898,7 +1922,7 @@ def main():
     )
 
     # -----------------------------------------------------
-    # BUTTONS
+    # INLINE BUTTONS
     # -----------------------------------------------------
 
     app.add_handler(
@@ -1908,7 +1932,7 @@ def main():
     )
 
     # -----------------------------------------------------
-    # IMAGE
+    # IMAGE MESSAGES
     # -----------------------------------------------------
 
     app.add_handler(
@@ -1919,7 +1943,7 @@ def main():
     )
 
     # -----------------------------------------------------
-    # TEXT
+    # TEXT MESSAGES
     # -----------------------------------------------------
 
     app.add_handler(
