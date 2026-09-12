@@ -592,13 +592,11 @@ User question:
 
             await update.message.reply_text(
                 answer[i:i + 4000]
-            )
-
-    except Exception as e:
-    logger.exception("GEMINI ERROR")
-    await update.message.reply_text(
-        f"⚠️ Ethio AI error:\n{type(e).__name__}: {e}"
-    )
+              except Exception as e:
+        logger.exception("GEMINI ERROR")
+        await update.message.reply_text(
+            f"⚠️ Ethio AI error:\n{type(e).__name__}: {e}"
+        )
 
 # =========================
 # ERROR
