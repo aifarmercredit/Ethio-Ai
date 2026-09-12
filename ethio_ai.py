@@ -3,11 +3,18 @@ import os
 import sqlite3
 from datetime import datetime, timezone, timedelta
 
-from telegram import Update
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LabeledPrice,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
+    PreCheckoutQueryHandler,
     ContextTypes,
     filters,
 )
@@ -23,11 +30,17 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+
 DATABASE = "ethio_ai_users.db"
+
+# Telegram Stars
+PREMIUM_PRICE_STARS = 100
+PREMIUM_DAYS = 30
+PREMIUM_PAYLOAD = "ethio_ai_premium_30_days"
 
 
 # =========================================================
-# ENVIRONMENT CHECK
+# CHECK ENVIRONMENT
 # =========================================================
 
 if not TELEGRAM_TOKEN:
@@ -46,7 +59,7 @@ except ValueError:
 
 
 # =========================================================
-# GEMINI CLIENT
+# GEMINI
 # =========================================================
 
 client = genai.Client(
@@ -77,6 +90,7 @@ def get_db():
 
 
 def init_database():
+
     conn = get_db()
 
     conn.execute("""
@@ -88,7 +102,8 @@ def init_database():
             status TEXT DEFAULT 'free',
             blocked INTEGER DEFAULT 0,
             created_at TEXT,
-            last_active TEXT
+            last_active TEXT,
+            premium_until TEXT
         )
     """)
 
@@ -96,7 +111,36 @@ def init_database():
     conn.close()
 
 
+def add_premium_column():
+
+    conn = get_db()
+
+    columns = conn.execute(
+        "PRAGMA table_info(users)"
+    ).fetchall()
+
+    names = [
+        column["name"]
+        for column in columns
+    ]
+
+    if "premium_until" not in names:
+
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN premium_until TEXT"
+        )
+
+        conn.commit()
+
+    conn.close()
+
+
+# =========================================================
+# USER MANAGEMENT
+# =========================================================
+
 def save_user(user):
+
     now = datetime.now(timezone.utc).isoformat()
 
     conn = get_db()
@@ -107,6 +151,7 @@ def save_user(user):
     ).fetchone()
 
     if existing:
+
         conn.execute("""
             UPDATE users
             SET first_name = ?,
@@ -123,6 +168,7 @@ def save_user(user):
         ))
 
     else:
+
         conn.execute("""
             INSERT INTO users
             (
@@ -133,9 +179,10 @@ def save_user(user):
                 status,
                 blocked,
                 created_at,
-                last_active
+                last_active,
+                premium_until
             )
-            VALUES (?, ?, ?, ?, 'free', 0, ?, ?)
+            VALUES (?, ?, ?, ?, 'free', 0, ?, ?, NULL)
         """, (
             user.id,
             user.first_name or "",
@@ -150,6 +197,7 @@ def save_user(user):
 
 
 def get_user(user_id):
+
     conn = get_db()
 
     row = conn.execute(
@@ -163,9 +211,57 @@ def get_user(user_id):
 
 
 def is_blocked(user_id):
+
     row = get_user(user_id)
 
-    return bool(row and row["blocked"])
+    return bool(
+        row and row["blocked"]
+    )
+
+
+def is_premium(user_id):
+
+    row = get_user(user_id)
+
+    if not row:
+        return False
+
+    if row["status"] != "premium":
+        return False
+
+    premium_until = row["premium_until"]
+
+    if not premium_until:
+        return False
+
+    try:
+
+        expiry = datetime.fromisoformat(
+            premium_until
+        )
+
+        if expiry > datetime.now(timezone.utc):
+
+            return True
+
+    except Exception:
+
+        return False
+
+    # Expired
+    conn = get_db()
+
+    conn.execute("""
+        UPDATE users
+        SET status = 'free',
+            premium_until = NULL
+        WHERE user_id = ?
+    """, (user_id,))
+
+    conn.commit()
+    conn.close()
+
+    return False
 
 
 # =========================================================
@@ -173,6 +269,7 @@ def is_blocked(user_id):
 # =========================================================
 
 def is_admin(update):
+
     return (
         update.effective_user
         and update.effective_user.id == ADMIN_ID
@@ -180,9 +277,11 @@ def is_admin(update):
 
 
 async def require_admin(update):
+
     if not is_admin(update):
 
         if update.message:
+
             await update.message.reply_text(
                 "⛔ You are not authorized to use this command."
             )
@@ -201,12 +300,19 @@ async def start(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not update.effective_user or not update.message:
+    if not update.effective_user:
         return
 
-    save_user(update.effective_user)
+    if not update.message:
+        return
 
-    if is_blocked(update.effective_user.id):
+    save_user(
+        update.effective_user
+    )
+
+    if is_blocked(
+        update.effective_user.id
+    ):
 
         await update.message.reply_text(
             "🚫 Your access to Ethio AI has been blocked."
@@ -214,12 +320,59 @@ async def start(
 
         return
 
+    if is_premium(
+        update.effective_user.id
+    ):
+
+        premium_text = (
+            "⭐ PREMIUM USER\n\n"
+            "Your Ethio AI Premium is active."
+        )
+
+    else:
+
+        premium_text = (
+            "🆓 FREE USER\n\n"
+            "Upgrade to Premium to unlock "
+            "more features."
+        )
+
+    keyboard = [
+
+        [
+            InlineKeyboardButton(
+                "⭐ Get Premium",
+                callback_data="get_premium"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "ℹ️ Help",
+                callback_data="help"
+            )
+        ]
+
+    ]
+
     await update.message.reply_text(
+
         "👋 Hello!\n\n"
+
         "🤖 I am Ethio AI.\n"
-        "Your intelligent AI assistant powered by Google Gemini.\n\n"
-        "Ask me anything and I will try my best to help you.\n\n"
-        "Use /help to see available commands."
+
+        "Your intelligent AI assistant "
+        "powered by Google Gemini.\n\n"
+
+        f"{premium_text}\n\n"
+
+        "💬 Send me a question.\n"
+        "🖼️ You can also send me an image "
+        "with a question.",
+
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
     )
 
 
@@ -232,12 +385,19 @@ async def help_command(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not update.effective_user or not update.message:
+    if not update.effective_user:
         return
 
-    save_user(update.effective_user)
+    if not update.message:
+        return
 
-    if is_blocked(update.effective_user.id):
+    save_user(
+        update.effective_user
+    )
+
+    if is_blocked(
+        update.effective_user.id
+    ):
 
         await update.message.reply_text(
             "🚫 Your access to Ethio AI has been blocked."
@@ -246,13 +406,230 @@ async def help_command(
         return
 
     await update.message.reply_text(
+
         "🤖 ETHIO AI\n\n"
-        "I am your AI assistant powered by Google Gemini.\n\n"
-        "Send me any question and I will try my best to help you.\n\n"
-        "📌 Commands:\n"
-        "/start - Start Ethio AI\n"
-        "/help - Show this help message\n\n"
-        "You can simply type your question."
+
+        "I am your AI assistant powered by "
+        "Google Gemini.\n\n"
+
+        "💬 Send a normal question.\n\n"
+
+        "🖼️ Send an image and ask a question "
+        "about it.\n\n"
+
+        "⭐ Use Get Premium for Premium access."
+    )
+
+
+# =========================================================
+# PREMIUM MENU
+# =========================================================
+
+async def premium_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.effective_user:
+        return
+
+    if not update.message:
+        return
+
+    save_user(
+        update.effective_user
+    )
+
+    if is_premium(
+        update.effective_user.id
+    ):
+
+        row = get_user(
+            update.effective_user.id
+        )
+
+        await update.message.reply_text(
+            "⭐ You already have Premium.\n\n"
+            f"📅 Premium until:\n"
+            f"{row['premium_until']}"
+        )
+
+        return
+
+    keyboard = [
+
+        [
+            InlineKeyboardButton(
+                f"💎 Buy Premium — "
+                f"{PREMIUM_PRICE_STARS} ⭐",
+                callback_data="get_premium"
+            )
+        ]
+
+    ]
+
+    await update.message.reply_text(
+
+        "⭐ ETHIO AI PREMIUM\n\n"
+
+        "Premium includes:\n\n"
+
+        "✅ AI chat\n"
+        "✅ Image questions\n"
+        "✅ Advanced AI assistance\n"
+        "✅ Premium access\n"
+        "✅ 30 days access\n\n"
+
+        f"💎 Price: "
+        f"{PREMIUM_PRICE_STARS} Telegram Stars\n\n"
+
+        "Tap the button below to continue.",
+
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
+    )
+
+
+# =========================================================
+# GET PREMIUM BUTTON
+# =========================================================
+
+async def get_premium(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    if is_premium(user_id):
+
+        await query.message.reply_text(
+            "⭐ You already have an active Premium subscription."
+        )
+
+        return
+
+    await context.bot.send_invoice(
+
+        chat_id=user_id,
+
+        title="Ethio AI Premium",
+
+        description=(
+            "Ethio AI Premium — "
+            "30 days of Premium access."
+        ),
+
+        payload=PREMIUM_PAYLOAD,
+
+        provider_token="",
+
+        currency="XTR",
+
+        prices=[
+            LabeledPrice(
+                "Ethio AI Premium — 30 Days",
+                PREMIUM_PRICE_STARS
+            )
+        ],
+    )
+
+
+# =========================================================
+# PRE-CHECKOUT
+# =========================================================
+
+async def precheckout_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.pre_checkout_query
+
+    if (
+        query.invoice_payload
+        != PREMIUM_PAYLOAD
+    ):
+
+        await query.answer(
+            ok=False,
+            error_message=(
+                "Invalid Premium payment."
+            )
+        )
+
+        return
+
+    await query.answer(
+        ok=True
+    )
+
+
+# =========================================================
+# SUCCESSFUL PAYMENT
+# =========================================================
+
+async def successful_payment_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
+
+    if not update.effective_user:
+        return
+
+    payment = update.message.successful_payment
+
+    if (
+        payment.invoice_payload
+        != PREMIUM_PAYLOAD
+    ):
+
+        return
+
+    user_id = update.effective_user.id
+
+    # 30 days from now
+    premium_until = (
+        datetime.now(timezone.utc)
+        + timedelta(days=PREMIUM_DAYS)
+    ).isoformat()
+
+    conn = get_db()
+
+    conn.execute("""
+        UPDATE users
+        SET status = 'premium',
+            premium_until = ?
+        WHERE user_id = ?
+    """, (
+        premium_until,
+        user_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(
+
+        "🎉 PAYMENT SUCCESSFUL!\n\n"
+
+        "⭐ ETHIO AI PREMIUM ACTIVATED!\n\n"
+
+        "✅ Premium access: ACTIVE\n"
+        "📅 Duration: 30 days\n\n"
+
+        f"⏰ Expires:\n"
+        f"{premium_until}\n\n"
+
+        "Thank you for supporting Ethio AI! 🤖"
     )
 
 
@@ -275,11 +652,18 @@ async def admin_command(
     ).fetchone()[0]
 
     premium = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE status='premium'"
+        "SELECT COUNT(*) FROM users "
+        "WHERE status='premium'"
     ).fetchone()[0]
 
     free = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE status='free'"
+        "SELECT COUNT(*) FROM users "
+        "WHERE status='free'"
+    ).fetchone()[0]
+
+    blocked = conn.execute(
+        "SELECT COUNT(*) FROM users "
+        "WHERE blocked=1"
     ).fetchone()[0]
 
     cutoff = (
@@ -288,27 +672,31 @@ async def admin_command(
     ).isoformat()
 
     active = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE last_active >= ?",
+        "SELECT COUNT(*) FROM users "
+        "WHERE last_active >= ?",
         (cutoff,)
     ).fetchone()[0]
 
     conn.close()
 
     await update.message.reply_text(
+
         "🤖 ETHIO AI — ADMIN\n\n"
+
         f"👥 Total Users: {total}\n"
         f"🟢 Active Users: {active}\n"
         f"⭐ Premium Users: {premium}\n"
-        f"🆓 Free Users: {free}\n\n"
-        "📊 Admin Commands\n"
+        f"🆓 Free Users: {free}\n"
+        f"🚫 Blocked Users: {blocked}\n\n"
+
+        "📊 Commands\n"
         "────────────────────\n"
-        "/users - View all users\n"
-        "/stats - Show statistics\n"
-        "/premium ID - Make user premium\n"
-        "/free ID - Make user free\n"
+        "/users - All users\n"
+        "/stats - Statistics\n"
+        "/premium ID - Give Premium\n"
+        "/free ID - Remove Premium\n"
         "/block ID - Block user\n"
-        "/unblock ID - Unblock user\n"
-        "────────────────────"
+        "/unblock ID - Unblock user"
     )
 
 
@@ -327,7 +715,8 @@ async def users_command(
     conn = get_db()
 
     users = conn.execute(
-        "SELECT * FROM users ORDER BY last_active DESC"
+        "SELECT * FROM users "
+        "ORDER BY last_active DESC"
     ).fetchall()
 
     conn.close()
@@ -345,7 +734,8 @@ async def users_command(
     for user in users:
 
         name = (
-            f"{user['first_name']} {user['last_name']}"
+            f"{user['first_name']} "
+            f"{user['last_name']}"
         ).strip()
 
         if not name:
@@ -358,27 +748,18 @@ async def users_command(
         )
 
         if user["blocked"]:
+
             status = "🚫 Blocked"
 
-        elif user["status"] == "premium":
+        elif is_premium(
+            user["user_id"]
+        ):
+
             status = "⭐ Premium"
 
         else:
+
             status = "🆓 Free"
-
-        try:
-
-            dt = datetime.fromisoformat(
-                user["last_active"]
-            )
-
-            last_active = dt.astimezone().strftime(
-                "%Y-%m-%d %H:%M"
-            )
-
-        except Exception:
-
-            last_active = "Unknown"
 
         text += (
             "────────────────────\n"
@@ -386,10 +767,13 @@ async def users_command(
             f"{username}\n"
             f"🆔 ID: {user['user_id']}\n"
             f"{status}\n"
-            f"🕐 Last active: {last_active}\n"
         )
 
-    for i in range(0, len(text), 4000):
+    for i in range(
+        0,
+        len(text),
+        4000
+    ):
 
         await update.message.reply_text(
             text[i:i + 4000]
@@ -415,21 +799,26 @@ async def stats_command(
     ).fetchone()[0]
 
     premium = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE status='premium'"
+        "SELECT COUNT(*) FROM users "
+        "WHERE status='premium'"
     ).fetchone()[0]
 
     free = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE status='free'"
+        "SELECT COUNT(*) FROM users "
+        "WHERE status='free'"
     ).fetchone()[0]
 
     blocked = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE blocked=1"
+        "SELECT COUNT(*) FROM users "
+        "WHERE blocked=1"
     ).fetchone()[0]
 
     conn.close()
 
     await update.message.reply_text(
+
         "📊 ETHIO AI — STATISTICS\n\n"
+
         f"👥 Total Users: {total}\n"
         f"⭐ Premium Users: {premium}\n"
         f"🆓 Free Users: {free}\n"
@@ -438,7 +827,7 @@ async def stats_command(
 
 
 # =========================================================
-# PREMIUM / FREE
+# MANUAL PREMIUM
 # =========================================================
 
 async def set_status(
@@ -460,7 +849,9 @@ async def set_status(
 
     try:
 
-        user_id = int(context.args[0])
+        user_id = int(
+            context.args[0]
+        )
 
     except ValueError:
 
@@ -470,11 +861,31 @@ async def set_status(
 
         return
 
+    if status == "premium":
+
+        premium_until = (
+            datetime.now(timezone.utc)
+            + timedelta(days=PREMIUM_DAYS)
+        ).isoformat()
+
+    else:
+
+        premium_until = None
+
     conn = get_db()
 
     result = conn.execute(
-        "UPDATE users SET status=? WHERE user_id=?",
-        (status, user_id)
+        """
+        UPDATE users
+        SET status = ?,
+            premium_until = ?
+        WHERE user_id = ?
+        """,
+        (
+            status,
+            premium_until,
+            user_id
+        )
     )
 
     conn.commit()
@@ -501,7 +912,10 @@ async def set_status(
         )
 
 
-async def premium_command(update, context):
+async def premium_command(
+    update,
+    context
+):
 
     await set_status(
         update,
@@ -510,7 +924,10 @@ async def premium_command(update, context):
     )
 
 
-async def free_command(update, context):
+async def free_command(
+    update,
+    context
+):
 
     await set_status(
         update,
@@ -534,7 +951,11 @@ async def set_block(
 
     if not context.args:
 
-        command = "block" if blocked else "unblock"
+        command = (
+            "block"
+            if blocked
+            else "unblock"
+        )
 
         await update.message.reply_text(
             f"Usage:\n/{command} USER_ID"
@@ -544,7 +965,9 @@ async def set_block(
 
     try:
 
-        user_id = int(context.args[0])
+        user_id = int(
+            context.args[0]
+        )
 
     except ValueError:
 
@@ -565,8 +988,15 @@ async def set_block(
     conn = get_db()
 
     result = conn.execute(
-        "UPDATE users SET blocked=? WHERE user_id=?",
-        (1 if blocked else 0, user_id)
+        """
+        UPDATE users
+        SET blocked = ?
+        WHERE user_id = ?
+        """,
+        (
+            1 if blocked else 0,
+            user_id
+        )
     )
 
     conn.commit()
@@ -593,7 +1023,10 @@ async def set_block(
         )
 
 
-async def block_command(update, context):
+async def block_command(
+    update,
+    context
+):
 
     await set_block(
         update,
@@ -602,7 +1035,10 @@ async def block_command(update, context):
     )
 
 
-async def unblock_command(update, context):
+async def unblock_command(
+    update,
+    context
+):
 
     await set_block(
         update,
@@ -612,7 +1048,7 @@ async def unblock_command(update, context):
 
 
 # =========================================================
-# GEMINI CHAT
+# GEMINI TEXT CHAT
 # =========================================================
 
 async def chat(
@@ -620,15 +1056,19 @@ async def chat(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not update.message or not update.message.text:
+    if not update.message:
         return
 
     if not update.effective_user:
         return
 
-    save_user(update.effective_user)
+    save_user(
+        update.effective_user
+    )
 
-    if is_blocked(update.effective_user.id):
+    if is_blocked(
+        update.effective_user.id
+    ):
 
         await update.message.reply_text(
             "🚫 Your access to Ethio AI has been blocked."
@@ -636,7 +1076,9 @@ async def chat(
 
         return
 
-    question = update.message.text.strip()
+    question = (
+        update.message.text or ""
+    ).strip()
 
     if not question:
         return
@@ -651,16 +1093,15 @@ async def chat(
 You are Ethio AI, an intelligent AI assistant.
 
 Identity rules:
-- Your assistant name is "Ethio AI".
-- If asked "What is your name?", answer:
+- Your name is Ethio AI.
+- If asked your name, say:
   "My name is Ethio AI."
-- If asked what technology powers you, answer:
+- If asked what technology powers you, say:
   "I am powered by Google Gemini."
-- Do not say your name is Gemini.
-- Do not invent a creator, company, person, or organization.
-- Be helpful, polite, clear, and concise.
+- Never say your name is Gemini.
+- Be helpful and polite.
 - You can communicate in English and Afaan Oromoo.
-- If the user writes in Afaan Oromoo,
+- If the user writes Afaan Oromoo,
   respond in Afaan Oromoo when possible.
 
 User question:
@@ -677,7 +1118,11 @@ User question:
             or "Sorry, I could not generate an answer."
         )
 
-        for i in range(0, len(answer), 4000):
+        for i in range(
+            0,
+            len(answer),
+            4000
+        ):
 
             await update.message.reply_text(
                 answer[i:i + 4000]
@@ -690,8 +1135,179 @@ User question:
         )
 
         await update.message.reply_text(
-            f"⚠️ Ethio AI error:\n"
+            "⚠️ Ethio AI error:\n"
             f"{type(e).__name__}: {e}"
+        )
+
+
+# =========================================================
+# IMAGE AI
+# =========================================================
+
+async def image_chat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
+
+    if not update.effective_user:
+        return
+
+    save_user(
+        update.effective_user
+    )
+
+    user_id = update.effective_user.id
+
+    if is_blocked(user_id):
+
+        await update.message.reply_text(
+            "🚫 Your access to Ethio AI has been blocked."
+        )
+
+        return
+
+    # Image feature
+    # Premium-only keessatti jijjiiruu yoo barbaadde
+    # asitti is_premium check dabaluu dandeessa.
+
+    question = (
+        update.message.caption
+        or
+        "Please analyze this image "
+        "and explain what you see."
+    )
+
+    try:
+
+        await update.effective_chat.send_action(
+            "typing"
+        )
+
+        photo = update.message.photo[-1]
+
+        file = await context.bot.get_file(
+            photo.file_id
+        )
+
+        image_bytes = await file.download_as_bytearray()
+
+        prompt = f"""
+You are Ethio AI.
+
+Analyze the image carefully.
+
+Answer the user's question clearly.
+
+If the user writes in Afaan Oromoo,
+respond in Afaan Oromoo when possible.
+
+Do not invent details that cannot be
+seen in the image.
+
+User question:
+{question}
+"""
+
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=[
+                prompt,
+                {
+                    "mime_type": "image/jpeg",
+                    "data": bytes(image_bytes),
+                }
+            ]
+        )
+
+        answer = (
+            response.text
+            or
+            "I could not analyze this image."
+        )
+
+        for i in range(
+            0,
+            len(answer),
+            4000
+        ):
+
+            await update.message.reply_text(
+                answer[i:i + 4000]
+            )
+
+    except Exception as e:
+
+        logger.exception(
+            "IMAGE ERROR"
+        )
+
+        await update.message.reply_text(
+            "⚠️ Image analysis error:\n"
+            f"{type(e).__name__}: {e}"
+        )
+
+
+# =========================================================
+# BUTTONS
+# =========================================================
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if query.data == "get_premium":
+
+        user_id = query.from_user.id
+
+        if is_premium(user_id):
+
+            await query.message.reply_text(
+                "⭐ You already have active Premium."
+            )
+
+            return
+
+        await context.bot.send_invoice(
+
+            chat_id=user_id,
+
+            title="Ethio AI Premium",
+
+            description=(
+                "30 days of Ethio AI Premium."
+            ),
+
+            payload=PREMIUM_PAYLOAD,
+
+            provider_token="",
+
+            currency="XTR",
+
+            prices=[
+                LabeledPrice(
+                    "Premium — 30 Days",
+                    PREMIUM_PRICE_STARS
+                )
+            ],
+        )
+
+    elif query.data == "help":
+
+        await query.message.reply_text(
+
+            "🤖 ETHIO AI HELP\n\n"
+
+            "💬 Send text to chat.\n"
+            "🖼️ Send an image with a question.\n"
+            "⭐ Get Premium for premium access."
         )
 
 
@@ -718,12 +1334,29 @@ def main():
 
     init_database()
 
+    add_premium_column()
+
     print("=" * 55)
     print("                    ETHIO AI")
     print("=" * 55)
-    print("Starting Ethio AI Telegram Bot...")
-    print(f"Gemini model: {MODEL}")
-    print(f"Admin ID: {ADMIN_ID}")
+
+    print(
+        "Starting Ethio AI Telegram Bot..."
+    )
+
+    print(
+        f"Gemini model: {MODEL}"
+    )
+
+    print(
+        f"Admin ID: {ADMIN_ID}"
+    )
+
+    print(
+        f"Premium: {PREMIUM_PRICE_STARS} Stars / "
+        f"{PREMIUM_DAYS} days"
+    )
+
     print()
 
     app = (
@@ -732,80 +1365,135 @@ def main():
         .build()
     )
 
-    # -----------------------------------------------------
-    # USER COMMANDS
-    # -----------------------------------------------------
+    # Commands
 
     app.add_handler(
-        CommandHandler("start", start)
-    )
-
-    app.add_handler(
-        CommandHandler("help", help_command)
-    )
-
-    # -----------------------------------------------------
-    # ADMIN COMMANDS
-    # -----------------------------------------------------
-
-    app.add_handler(
-        CommandHandler("admin", admin_command)
-    )
-
-    app.add_handler(
-        CommandHandler("users", users_command)
-    )
-
-    app.add_handler(
-        CommandHandler("stats", stats_command)
-    )
-
-    app.add_handler(
-        CommandHandler("premium", premium_command)
-    )
-
-    app.add_handler(
-        CommandHandler("free", free_command)
-    )
-
-    app.add_handler(
-        CommandHandler("block", block_command)
-    )
-
-    app.add_handler(
-        CommandHandler("unblock", unblock_command)
-    )
-
-    # -----------------------------------------------------
-    # AI CHAT
-    # -----------------------------------------------------
-
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            chat
+        CommandHandler(
+            "start",
+            start
         )
     )
 
-    # -----------------------------------------------------
-    # ERROR HANDLER
-    # -----------------------------------------------------
+    app.add_handler(
+        CommandHandler(
+            "help",
+            help_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "premium",
+            premium_menu
+        )
+    )
+
+    # Admin
+
+    app.add_handler(
+        CommandHandler(
+            "admin",
+            admin_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "users",
+            users_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "stats",
+            stats_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "premiumuser",
+            premium_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "free",
+            free_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "block",
+            block_command
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "unblock",
+            unblock_command
+        )
+    )
+
+    # Buttons
+
+    app.add_handler(
+        CallbackQueryHandler(
+            button_handler
+        )
+    )
+
+    # Payment
+
+    app.add_handler(
+        PreCheckoutQueryHandler(
+            precheckout_callback
+        )
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.SUCCESSFUL_PAYMENT,
+            successful_payment_callback
+        )
+    )
+
+    # Images
+
+    app.add_handler(
+        MessageHandler(
+            filters.PHOTO,
+            image_chat
+        )
+    )
+
+    # Text
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            chat
+        )
+    )
 
     app.add_error_handler(
         error_handler
     )
 
-    print("✅ Ethio AI is running!")
-
-    # -----------------------------------------------------
-    # START BOT
-    # -----------------------------------------------------
+    print(
+        "✅ Ethio AI is running!"
+    )
 
     app.run_polling()
 
 
 # =========================================================
-# RUN
+# START BOT
 # =========================================================
 
 if __name__ == "__main__":
