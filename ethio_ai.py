@@ -594,18 +594,11 @@ User question:
                 answer[i:i + 4000]
             )
 
-    except Exception:
-
-        logger.exception(
-            "Gemini request failed"
-        )
-
-        await update.message.reply_text(
-            "⚠️ Sorry, Ethio AI could not process "
-            "your request right now.\n\n"
-            "Please try again in a moment."
-        )
-
+    except Exception as e:
+    logger.exception("GEMINI ERROR")
+    await update.message.reply_text(
+        f"⚠️ Ethio AI error:\n{type(e).__name__}: {e}"
+    )
 
 # =========================
 # ERROR
