@@ -13,12 +13,22 @@ from telegram.ext import (
 )
 from google import genai
 
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 
 MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 DATABASE = "ethio_ai_users.db"
+
+
+# =========================================================
+# ENVIRONMENT CHECK
+# =========================================================
 
 if not TELEGRAM_TOKEN:
     raise RuntimeError("TELEGRAM_TOKEN is missing.")
@@ -34,7 +44,19 @@ try:
 except ValueError:
     raise RuntimeError("ADMIN_ID must be a numeric Telegram ID.")
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+
+# =========================================================
+# GEMINI CLIENT
+# =========================================================
+
+client = genai.Client(
+    api_key=GEMINI_API_KEY
+)
+
+
+# =========================================================
+# LOGGING
+# =========================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -44,9 +66,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# =========================
+# =========================================================
 # DATABASE
-# =========================
+# =========================================================
 
 def get_db():
     conn = sqlite3.connect(DATABASE)
@@ -99,6 +121,7 @@ def save_user(user):
             now,
             user.id
         ))
+
     else:
         conn.execute("""
             INSERT INTO users
@@ -145,9 +168,9 @@ def is_blocked(user_id):
     return bool(row and row["blocked"])
 
 
-# =========================
+# =========================================================
 # ADMIN
-# =========================
+# =========================================================
 
 def is_admin(update):
     return (
@@ -158,6 +181,7 @@ def is_admin(update):
 
 async def require_admin(update):
     if not is_admin(update):
+
         if update.message:
             await update.message.reply_text(
                 "⛔ You are not authorized to use this command."
@@ -168,11 +192,14 @@ async def require_admin(update):
     return True
 
 
-# =========================
+# =========================================================
 # START
-# =========================
+# =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.effective_user or not update.message:
         return
@@ -180,9 +207,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update.effective_user)
 
     if is_blocked(update.effective_user.id):
+
         await update.message.reply_text(
             "🚫 Your access to Ethio AI has been blocked."
         )
+
         return
 
     await update.message.reply_text(
@@ -194,11 +223,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
+# =========================================================
 # HELP
-# =========================
+# =========================================================
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.effective_user or not update.message:
         return
@@ -206,9 +238,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update.effective_user)
 
     if is_blocked(update.effective_user.id):
+
         await update.message.reply_text(
             "🚫 Your access to Ethio AI has been blocked."
         )
+
         return
 
     await update.message.reply_text(
@@ -222,11 +256,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
+# =========================================================
 # ADMIN DASHBOARD
-# =========================
+# =========================================================
 
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not await require_admin(update):
         return
@@ -275,11 +312,14 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
+# =========================================================
 # USERS
-# =========================
+# =========================================================
 
-async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def users_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not await require_admin(update):
         return
@@ -293,9 +333,11 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
 
     if not users:
+
         await update.message.reply_text(
             "👥 No users found."
         )
+
         return
 
     text = "👥 ETHIO AI — USERS\n\n"
@@ -317,12 +359,15 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if user["blocked"]:
             status = "🚫 Blocked"
+
         elif user["status"] == "premium":
             status = "⭐ Premium"
+
         else:
             status = "🆓 Free"
 
         try:
+
             dt = datetime.fromisoformat(
                 user["last_active"]
             )
@@ -332,6 +377,7 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         except Exception:
+
             last_active = "Unknown"
 
         text += (
@@ -344,16 +390,20 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     for i in range(0, len(text), 4000):
+
         await update.message.reply_text(
             text[i:i + 4000]
         )
 
 
-# =========================
+# =========================================================
 # STATS
-# =========================
+# =========================================================
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not await require_admin(update):
         return
@@ -387,28 +437,37 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# =========================
+# =========================================================
 # PREMIUM / FREE
-# =========================
+# =========================================================
 
-async def set_status(update, context, status):
+async def set_status(
+    update,
+    context,
+    status
+):
 
     if not await require_admin(update):
         return
 
     if not context.args:
+
         await update.message.reply_text(
             f"Usage:\n/{status} USER_ID"
         )
+
         return
 
     try:
+
         user_id = int(context.args[0])
 
     except ValueError:
+
         await update.message.reply_text(
             "❌ Invalid user ID."
         )
+
         return
 
     conn = get_db()
@@ -422,22 +481,28 @@ async def set_status(update, context, status):
     conn.close()
 
     if result.rowcount == 0:
+
         await update.message.reply_text(
             "❌ User not found."
         )
+
         return
 
     if status == "premium":
+
         await update.message.reply_text(
             f"⭐ User {user_id} is now PREMIUM."
         )
+
     else:
+
         await update.message.reply_text(
             f"🆓 User {user_id} is now FREE."
         )
 
 
 async def premium_command(update, context):
+
     await set_status(
         update,
         context,
@@ -446,6 +511,7 @@ async def premium_command(update, context):
 
 
 async def free_command(update, context):
+
     await set_status(
         update,
         context,
@@ -453,36 +519,47 @@ async def free_command(update, context):
     )
 
 
-# =========================
+# =========================================================
 # BLOCK / UNBLOCK
-# =========================
+# =========================================================
 
-async def set_block(update, context, blocked):
+async def set_block(
+    update,
+    context,
+    blocked
+):
 
     if not await require_admin(update):
         return
 
     if not context.args:
+
         command = "block" if blocked else "unblock"
 
         await update.message.reply_text(
             f"Usage:\n/{command} USER_ID"
         )
+
         return
 
     try:
+
         user_id = int(context.args[0])
 
     except ValueError:
+
         await update.message.reply_text(
             "❌ Invalid user ID."
         )
+
         return
 
     if user_id == ADMIN_ID:
+
         await update.message.reply_text(
             "❌ You cannot block the admin."
         )
+
         return
 
     conn = get_db()
@@ -496,22 +573,28 @@ async def set_block(update, context, blocked):
     conn.close()
 
     if result.rowcount == 0:
+
         await update.message.reply_text(
             "❌ User not found."
         )
+
         return
 
     if blocked:
+
         await update.message.reply_text(
             f"🚫 User {user_id} has been BLOCKED."
         )
+
     else:
+
         await update.message.reply_text(
             f"✅ User {user_id} has been UNBLOCKED."
         )
 
 
 async def block_command(update, context):
+
     await set_block(
         update,
         context,
@@ -520,6 +603,7 @@ async def block_command(update, context):
 
 
 async def unblock_command(update, context):
+
     await set_block(
         update,
         context,
@@ -527,11 +611,14 @@ async def unblock_command(update, context):
     )
 
 
-# =========================
+# =========================================================
 # GEMINI CHAT
-# =========================
+# =========================================================
 
-async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def chat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not update.message or not update.message.text:
         return
@@ -542,9 +629,11 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update.effective_user)
 
     if is_blocked(update.effective_user.id):
+
         await update.message.reply_text(
             "🚫 Your access to Ethio AI has been blocked."
         )
+
         return
 
     question = update.message.text.strip()
@@ -592,18 +681,28 @@ User question:
 
             await update.message.reply_text(
                 answer[i:i + 4000]
-                (
-              except Exception as e:
-        logger.exception("GEMINI ERROR")
-        await update.message.reply_text(
-            f"⚠️ Ethio AI error:\n{type(e).__name__}: {e}"
+            )
+
+    except Exception as e:
+
+        logger.exception(
+            "GEMINI ERROR"
         )
 
-# =========================
-# ERROR
-# =========================
+        await update.message.reply_text(
+            f"⚠️ Ethio AI error:\n"
+            f"{type(e).__name__}: {e}"
+        )
 
-async def error_handler(update, context):
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(
+    update,
+    context
+):
 
     logger.exception(
         "Unhandled Telegram error",
@@ -611,9 +710,9 @@ async def error_handler(update, context):
     )
 
 
-# =========================
+# =========================================================
 # MAIN
-# =========================
+# =========================================================
 
 def main():
 
@@ -633,7 +732,10 @@ def main():
         .build()
     )
 
-    # User commands
+    # -----------------------------------------------------
+    # USER COMMANDS
+    # -----------------------------------------------------
+
     app.add_handler(
         CommandHandler("start", start)
     )
@@ -642,7 +744,10 @@ def main():
         CommandHandler("help", help_command)
     )
 
-    # Admin commands
+    # -----------------------------------------------------
+    # ADMIN COMMANDS
+    # -----------------------------------------------------
+
     app.add_handler(
         CommandHandler("admin", admin_command)
     )
@@ -671,7 +776,10 @@ def main():
         CommandHandler("unblock", unblock_command)
     )
 
-    # AI chat
+    # -----------------------------------------------------
+    # AI CHAT
+    # -----------------------------------------------------
+
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -679,14 +787,26 @@ def main():
         )
     )
 
+    # -----------------------------------------------------
+    # ERROR HANDLER
+    # -----------------------------------------------------
+
     app.add_error_handler(
         error_handler
     )
 
     print("✅ Ethio AI is running!")
 
+    # -----------------------------------------------------
+    # START BOT
+    # -----------------------------------------------------
+
     app.run_polling()
 
+
+# =========================================================
+# RUN
+# =========================================================
 
 if __name__ == "__main__":
     main()
