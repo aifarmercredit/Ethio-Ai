@@ -592,6 +592,7 @@ User question:
 
             await update.message.reply_text(
                 answer[i:i + 4000]
+                (
               except Exception as e:
         logger.exception("GEMINI ERROR")
         await update.message.reply_text(
