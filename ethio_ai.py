@@ -1052,7 +1052,7 @@ async def referrals_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(
                         chat_id=referrer_id,
                         text=(
-                            "🎉 Namni tokko link kee irraa Ethio AI jalqabe!\n\n"
+                            "🎉 Someone started using Ethio AI through your referral link!\n\n"
                             f"👥 Total Invites: {get_referral_count(referrer_id)}"
                             f"{reward_text}"
                         ),
@@ -1096,7 +1096,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(
                         chat_id=referrer_id,
                         text=(
-                            "🎉 Namni tokko link kee irraa Ethio AI jalqabe!\n\n"
+                           "🎉 Someone started using Ethio AI through your referral link!\n\n"
                             f"👥 Total Invites: {get_referral_count(referrer_id)}"
                             f"{reward_text}"
                         ),
