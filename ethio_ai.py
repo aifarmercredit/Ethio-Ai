@@ -79,7 +79,7 @@ TELEBIRR_PHONE = "0967767646"
 
 
 # =========================================================
-# PAYMENT SECURITY SETTINGS
+# PAYMENT SECURITY
 # =========================================================
 
 MAX_PAYMENT_ATTEMPTS = 5
@@ -106,7 +106,7 @@ except ValueError:
 
 
 # =========================================================
-# GEMINI CLIENT
+# GEMINI
 # =========================================================
 
 client = genai.Client(
@@ -146,11 +146,11 @@ def column_exists(cursor, table_name, column_name):
         f"PRAGMA table_info({table_name})"
     )
 
-    columns = cursor.fetchall()
+    rows = cursor.fetchall()
 
     return any(
         row["name"] == column_name
-        for row in columns
+        for row in rows
     )
 
 
@@ -177,10 +177,7 @@ def init_database():
     conn = get_db()
     cursor = conn.cursor()
 
-    # -----------------------------------------------------
     # USERS
-    # -----------------------------------------------------
-
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -197,10 +194,7 @@ def init_database():
         """
     )
 
-    # -----------------------------------------------------
     # IMAGE USAGE
-    # -----------------------------------------------------
-
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS image_usage (
@@ -212,10 +206,7 @@ def init_database():
         """
     )
 
-    # -----------------------------------------------------
     # PAYMENT REQUESTS
-    # -----------------------------------------------------
-
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS payment_requests (
@@ -236,10 +227,7 @@ def init_database():
         """
     )
 
-    # -----------------------------------------------------
-    # MIGRATION FOR OLD DATABASE
-    # -----------------------------------------------------
-
+    # DATABASE MIGRATION
     add_column_if_missing(
         cursor,
         "payment_requests",
@@ -261,9 +249,8 @@ def init_database():
         "INTEGER DEFAULT 0",
     )
 
-    # -----------------------------------------------------
-    # UNIQUE TRANSACTION ID
-    # -----------------------------------------------------
+    # Remove/ignore old screenshot records.
+    # New system does not create screenshot payment requests.
 
     cursor.execute(
         """
@@ -282,7 +269,7 @@ def init_database():
 
 
 # =========================================================
-# USER FUNCTIONS
+# USERS
 # =========================================================
 
 def save_user(user):
@@ -444,14 +431,12 @@ def set_premium(user_id, days):
             old_expiry = None
 
     if old_expiry and old_expiry > now:
-        expiry = (
-            old_expiry
-            + timedelta(days=days)
+        expiry = old_expiry + timedelta(
+            days=days
         )
     else:
-        expiry = (
-            now
-            + timedelta(days=days)
+        expiry = now + timedelta(
+            days=days
         )
 
     cursor.execute(
@@ -526,15 +511,11 @@ def set_unblock(user_id):
 
 
 # =========================================================
-# FREE IMAGE LIMIT
+# IMAGE LIMIT
 # =========================================================
 
 def get_today_image_count(user_id):
-    today = (
-        now_utc()
-        .date()
-        .isoformat()
-    )
+    today = now_utc().date().isoformat()
 
     conn = get_db()
     cursor = conn.cursor()
@@ -563,22 +544,8 @@ def get_today_image_count(user_id):
     )
 
 
-def can_use_free_image(user_id):
-    if is_premium(user_id):
-        return True
-
-    return (
-        get_today_image_count(user_id)
-        < FREE_DAILY_IMAGE_LIMIT
-    )
-
-
-def record_free_image(user_id):
-    today = (
-        now_utc()
-        .date()
-        .isoformat()
-    )
+def record_image_usage(user_id):
+    today = now_utc().date().isoformat()
 
     conn = get_db()
     cursor = conn.cursor()
@@ -594,8 +561,7 @@ def record_free_image(user_id):
 
         ON CONFLICT(user_id, usage_date)
         DO UPDATE SET
-            image_count =
-                image_count + 1
+            image_count = image_count + 1
         """,
         (
             user_id,
@@ -638,8 +604,7 @@ def create_payment_request(
     amount_etb,
     transaction_text,
     transaction_id,
-    screenshot_file_id=None,
-    attempts_used=0,
+    attempts_used,
 ):
     conn = get_db()
     cursor = conn.cursor()
@@ -657,13 +622,12 @@ def create_payment_request(
             attempts_used,
             created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        VALUES (?, ?, ?, NULL, ?, ?, 'pending', ?, ?)
         """,
         (
             user_id,
             plan,
             amount_etb,
-            screenshot_file_id,
             transaction_text,
             transaction_id,
             attempts_used,
@@ -760,7 +724,7 @@ def has_pending_payment(user_id):
 
 def transaction_already_used(transaction_id):
     if not transaction_id:
-        return False
+        return None
 
     conn = get_db()
     cursor = conn.cursor()
@@ -786,23 +750,14 @@ def transaction_already_used(transaction_id):
 # PAYMENT SESSION
 # =========================================================
 
-def start_payment_session(
-    context,
-    plan,
-):
-    expires = (
-        now_utc()
-        + timedelta(
-            minutes=PAYMENT_TIMEOUT_MINUTES
-        )
+def start_payment_session(context, plan):
+    expires = now_utc() + timedelta(
+        minutes=PAYMENT_TIMEOUT_MINUTES
     )
 
-    context.user_data[
-        "payment_session"
-    ] = {
+    context.user_data["payment_session"] = {
         "plan": plan,
         "attempts_used": 0,
-        "attempts_left": MAX_PAYMENT_ATTEMPTS,
         "expires_at": expires.isoformat(),
     }
 
@@ -854,17 +809,17 @@ def payment_received_message():
 
         "🇬🇧 English:\n"
         "Your Telebirr transaction has been received. "
-        "I am checking the amount, recipient and transaction reference.\n"
-        "⚠️ This is only an initial check. Premium will NOT be activated until an admin verifies the payment.\n\n"
+        "I am checking the payment amount, recipient and transaction reference.\n"
+        "⚠️ This is an initial check only. Premium will NOT activate until an admin verifies the payment.\n\n"
 
         "🇪🇹 Afaan Oromoo:\n"
-        "Daldalli Telebirr kee nu gaheera. "
-        "Amma hanga kaffaltii, maqaa/number nama fudhatuu fi lakkoofsa transaction sakatta'aa jira.\n"
+        "Transaction Telebirr kee nu gaheera. "
+        "Amma hanga kaffaltii, nama itti ergametti fi transaction reference sakatta'aa jira.\n"
         "⚠️ Kun sakatta'iinsa jalqabaa qofa. Premium kan banamu admin erga kaffaltii mirkaneesse booda qofa.\n\n"
 
         "🇪🇹 አማርኛ:\n"
         "የTelebirr ግብይትዎ ደርሶናል። "
-        "የክፍያውን መጠን፣ የተቀባዩን ስም/ቁጥር እና የግብይት መለያ እያረጋገጥን ነው።\n"
+        "የክፍያ መጠኑን፣ ተቀባዩን እና የግብይት ማጣቀሻውን እያረጋገጥን ነው።\n"
         "⚠️ ይህ የመጀመሪያ ማጣሪያ ብቻ ነው። Premium የሚነቃው አስተዳዳሪው ክፍያውን ካረጋገጠ በኋላ ብቻ ነው።"
     )
 
@@ -899,51 +854,77 @@ def payment_failed_message(
     )
 
 
+def payment_locked_message():
+    return (
+        "🔒 PAYMENT SESSION LOCKED\n\n"
+
+        "🇬🇧 English:\n"
+        "You used all 5 payment attempts.\n"
+        "Please wait 15 minutes before starting a new payment session.\n\n"
+
+        "🇪🇹 Afaan Oromoo:\n"
+        "Carraa kaffaltii 5 hunda fayyadamteetta.\n"
+        "Maaloo daqiiqaa 15 eegiitii booda session kaffaltii haaraa jalqabi.\n\n"
+
+        "🇪🇹 አማርኛ:\n"
+        "5ቱንም የክፍያ ሙከራዎች ተጠቅመዋል።\n"
+        "እባክዎ 15 ደቂቃ ይጠብቁ ከዚያ አዲስ የክፍያ ሂደት ይጀምሩ።"
+    )
+
+
+# =========================================================
+# DIGIT NORMALIZATION
+# =========================================================
+
+def normalize_digits(text):
+    arabic = str.maketrans(
+        "٠١٢٣٤٥٦٧٨٩",
+        "0123456789",
+    )
+
+    ethiopic = str.maketrans(
+        "፩፪፫፬፭፮፯፰፱",
+        "123456789",
+    )
+
+    return text.translate(arabic).translate(ethiopic)
+
+
 # =========================================================
 # AMOUNT PARSER
 # =========================================================
 
-def normalize_digits(text):
-    translation = str.maketrans(
-        "፩፪፫፬፭፮፯፰፱፰",
-        "1234567898",
-    )
-
-    return text.translate(translation)
-
-
 def extract_amounts(text):
     text = normalize_digits(text)
 
-    matches = re.findall(
-        r"""
-        (?:
-            ETB\s*|
-            Birr\s*|
-            birr\s*|
-            ብር\s*|
-            amount\s*[:=]?\s*
-        )?
-        (\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)
-        \s*
-        (?:ETB|Birr|birr|ብር)?
-        """,
-        text,
-        flags=re.IGNORECASE | re.VERBOSE,
-    )
+    patterns = [
+        r"(?:amount|paid|payment|sent|transferred|debited)"
+        r"[^\d]{0,40}"
+        r"(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)"
+        r"\s*(?:ETB|Birr|birr|ብር)?",
+
+        r"(\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?)"
+        r"\s*(?:ETB|Birr|birr|ብር)",
+    ]
 
     values = []
 
-    for item in matches:
-        try:
-            value = float(
-                item.replace(",", "")
-            )
+    for pattern in patterns:
+        matches = re.findall(
+            pattern,
+            text,
+            flags=re.IGNORECASE,
+        )
 
-            values.append(value)
-
-        except ValueError:
-            pass
+        for item in matches:
+            try:
+                values.append(
+                    float(
+                        item.replace(",", "")
+                    )
+                )
+            except ValueError:
+                pass
 
     return values
 
@@ -951,11 +932,10 @@ def extract_amounts(text):
 def amount_matches(text, expected):
     amounts = extract_amounts(text)
 
-    for amount in amounts:
-        if abs(amount - expected) < 0.01:
-            return True
-
-    return False
+    return any(
+        abs(amount - expected) < 0.01
+        for amount in amounts
+    )
 
 
 # =========================================================
@@ -995,16 +975,28 @@ def recipient_matches(text):
 
 
 # =========================================================
-# TRANSACTION ID PARSER
+# TRANSACTION ID
 # =========================================================
 
 def extract_transaction_id(text):
     patterns = [
-        r"(?:transaction\s*(?:id|no|number|ref(?:erence)?))\s*[:#=\-]?\s*([A-Za-z0-9\-]{5,})",
-        r"(?:tx\s*(?:id|no))\s*[:#=\-]?\s*([A-Za-z0-9\-]{5,})",
-        r"(?:reference\s*(?:id|no|number))\s*[:#=\-]?\s*([A-Za-z0-9\-]{5,})",
-        r"(?:ref)\s*[:#=\-]\s*([A-Za-z0-9\-]{5,})",
-        r"(?:receipt\s*(?:no|number))\s*[:#=\-]?\s*([A-Za-z0-9\-]{5,})",
+        r"(?:transaction\s*(?:id|no|number|ref(?:erence)?))"
+        r"\s*[:#=\-]?\s*([A-Za-z0-9\-]{5,})",
+
+        r"(?:tx\s*(?:id|no))"
+        r"\s*[:#=\-]?\s*([A-Za-z0-9\-]{5,})",
+
+        r"(?:reference\s*(?:id|no|number))"
+        r"\s*[:#=\-]?\s*([A-Za-z0-9\-]{5,})",
+
+        r"(?:ref)"
+        r"\s*[:#=\-]\s*([A-Za-z0-9\-]{5,})",
+
+        r"(?:receipt\s*(?:no|number))"
+        r"\s*[:#=\-]?\s*([A-Za-z0-9\-]{5,})",
+
+        r"(?:የግብይት\s*(?:ቁጥር|መለያ))"
+        r"\s*[:#=\-]?\s*([A-Za-z0-9\-]{5,})",
     ]
 
     for pattern in patterns:
@@ -1021,13 +1013,10 @@ def extract_transaction_id(text):
 
 
 # =========================================================
-# PAYMENT SMS VALIDATION
+# PAYMENT VALIDATION
 # =========================================================
 
-def validate_payment_sms(
-    text,
-    expected,
-):
+def validate_payment_sms(text, expected):
     text = text.strip()
 
     if len(text) < 10:
@@ -1039,10 +1028,8 @@ def validate_payment_sms(
             "transaction_id": None,
         }
 
-    if not amount_matches(
-        text,
-        expected,
-    ):
+    # AMOUNT
+    if not amount_matches(text, expected):
         return {
             "ok": False,
             "reason": (
@@ -1060,11 +1047,12 @@ def validate_payment_sms(
             "transaction_id": None,
         }
 
+    # RECEIVER
     if not recipient_matches(text):
         return {
             "ok": False,
             "reason": (
-                f"The payment was sent to the wrong recipient. "
+                "The payment was sent to the wrong recipient. "
                 f"Please pay to {TELEBIRR_NAME} / {TELEBIRR_PHONE}."
             ),
             "reason_or": (
@@ -1078,6 +1066,7 @@ def validate_payment_sms(
             "transaction_id": None,
         }
 
+    # TRANSACTION ID
     transaction_id = extract_transaction_id(text)
 
     if transaction_id:
@@ -1113,15 +1102,11 @@ def validate_payment_sms(
 # START
 # =========================================================
 
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def start(update, context):
     if not update.effective_user or not update.message:
         return
 
     user = update.effective_user
-
     save_user(user)
 
     if is_blocked(user.id):
@@ -1145,7 +1130,6 @@ async def start(
         )
 
         row = cursor.fetchone()
-
         conn.close()
 
         expiry_text = "unknown"
@@ -1169,11 +1153,15 @@ async def start(
 
     else:
 
+        used = get_today_image_count(
+            user.id
+        )
+
         text = (
             f"👋 Hello {user.first_name}!\n\n"
             "🤖 Welcome to Ethio AI.\n\n"
-            "💬 You can chat with me for free.\n"
-            f"🖼️ Images today: 0/{FREE_DAILY_IMAGE_LIMIT}\n"
+            "💬 You can chat with me.\n"
+            f"🖼️ Images today: {used}/{FREE_DAILY_IMAGE_LIMIT}\n"
             "💎 Upgrade to Premium for unlimited image analysis.\n\n"
             "How can I help you?"
         )
@@ -1219,15 +1207,11 @@ async def start(
 # HELP
 # =========================================================
 
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def help_command(update, context):
     if not update.effective_user or not update.message:
         return
 
     user = update.effective_user
-
     save_user(user)
 
     if is_blocked(user.id):
@@ -1240,11 +1224,14 @@ async def help_command(
         "🤖 ETHIO AI — HELP\n\n"
         "💬 Send a text message to chat with me.\n"
         "🖼️ Send an image and I will analyze it.\n"
-        f"🆓 Images: {FREE_DAILY_IMAGE_LIMIT}/day.\n"
-        "💎 Premium: unlimited image analysis.\n\n"
-        "💳 Premium:\n"
+        f"🖼️ Images today: {get_today_image_count(user.id)}/{FREE_DAILY_IMAGE_LIMIT}\n\n"
+        "💎 Premium:\n"
         f"• Monthly: {MONTHLY_PRICE_ETB} ETB\n"
-        f"• Yearly: {YEARLY_PRICE_ETB} ETB\n\n"
+        f"• Yearly: {YEARLY_PRICE_ETB} ETB\n"
+        "• Unlimited image analysis\n\n"
+        "💳 Payment:\n"
+        "Choose a Premium plan, send the exact amount to Telebirr, "
+        "then copy and paste the FULL Telebirr SMS.\n\n"
         "Commands:\n"
         "/start - Start Ethio AI\n"
         "/help - Help\n"
@@ -1257,15 +1244,11 @@ async def help_command(
 # STATUS
 # =========================================================
 
-async def status_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def status_command(update, context):
     if not update.effective_user or not update.message:
         return
 
     user = update.effective_user
-
     save_user(user)
 
     if is_blocked(user.id):
@@ -1289,16 +1272,13 @@ async def status_command(
         )
 
         row = cursor.fetchone()
-
         conn.close()
 
         expiry = datetime.fromisoformat(
             row["premium_until"]
         )
 
-        remaining = (
-            expiry - now_utc()
-        )
+        remaining = expiry - now_utc()
 
         days = max(
             0,
@@ -1331,18 +1311,15 @@ async def status_command(
 # PREMIUM MENU
 # =========================================================
 
-async def premium_menu(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def premium_menu(update, context):
     if not update.effective_user:
         return
 
     user = update.effective_user
-
     save_user(user)
 
     if is_blocked(user.id):
+
         target = (
             update.message
             or (
@@ -1395,9 +1372,7 @@ async def premium_menu(
         "👇 Select your plan:"
     )
 
-    markup = InlineKeyboardMarkup(
-        keyboard
-    )
+    markup = InlineKeyboardMarkup(keyboard)
 
     if update.message:
 
@@ -1415,7 +1390,7 @@ async def premium_menu(
 
 
 # =========================================================
-# TELEBIRR PAYMENT INSTRUCTIONS
+# PAYMENT INSTRUCTIONS
 # =========================================================
 
 async def show_payment_instructions(
@@ -1423,19 +1398,11 @@ async def show_payment_instructions(
     plan,
     amount,
 ):
-    selected_plan = plan_name(plan)
-
     keyboard = [
         [
             InlineKeyboardButton(
                 "📩 I Paid — Paste Full Telebirr SMS",
                 callback_data=f"paste_payment:{plan}",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📸 Send Screenshot Too",
-                callback_data=f"payment_screenshot:{plan}",
             )
         ],
         [
@@ -1448,7 +1415,8 @@ async def show_payment_instructions(
 
     await query.edit_message_text(
         "📱 TELEBIRR PAYMENT\n\n"
-        f"💎 Plan: {selected_plan}\n"
+
+        f"💎 Plan: {plan_name(plan)}\n"
         f"💰 Amount: {amount} ETB\n\n"
 
         f"👤 Name: {TELEBIRR_NAME}\n"
@@ -1457,24 +1425,28 @@ async def show_payment_instructions(
         "⚠️ PLEASE READ\n\n"
 
         "🇬🇧 English:\n"
-        f"Send exactly {amount} ETB to the receiver above.\n"
+        f"Send exactly {amount} ETB to:\n"
+        f"Name: {TELEBIRR_NAME}\n"
+        f"Telebirr: {TELEBIRR_PHONE}\n\n"
         "After payment, check the Telebirr SMS you received.\n"
-        "Copy the FULL SMS and paste it into this chat.\n\n"
+        "Copy the FULL SMS exactly as received and paste it here.\n\n"
 
         "🇪🇹 Afaan Oromoo:\n"
-        f"Hanga {amount} ETB sirriitti nama armaan oliif ergi.\n"
+        f"Hanga {amount} ETB sirriitti:\n"
+        f"Maqaa: {TELEBIRR_NAME}\n"
+        f"Telebirr: {TELEBIRR_PHONE}\n"
         "Erga kaffaltee booda SMS Telebirr siif dhufe ilaali.\n"
-        "SMS GUUTUU COPY godhiitii chat kana keessatti PASTE godhi.\n\n"
+        "SMS GUUTUU akkuma siif dhufeetti COPY godhiitii asitti PASTE godhi.\n\n"
 
         "🇪🇹 አማርኛ:\n"
-        f"በትክክል {amount} ETB ከላይ ለተጠቀሰው ተቀባይ ይላኩ።\n"
+        f"በትክክል {amount} ETB ወደ፦\n"
+        f"ስም፦ {TELEBIRR_NAME}\n"
+        f"Telebirr፦ {TELEBIRR_PHONE}\n"
         "ክፍያውን ከፈጸሙ በኋላ የTelebirr SMS ይመልከቱ።\n"
-        "ሙሉውን SMS COPY አድርገው እዚህ PASTE ያድርጉ።\n\n"
+        "ሙሉውን SMS እንደደረሰዎት COPY እና PASTE ያድርጉ።\n\n"
 
         "🔐 Premium will activate ONLY after admin verification.",
-        reply_markup=InlineKeyboardMarkup(
-            keyboard
-        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 
@@ -1482,10 +1454,7 @@ async def show_payment_instructions(
 # BUTTON HANDLER
 # =========================================================
 
-async def button_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def button_handler(update, context):
     query = update.callback_query
 
     if not query:
@@ -1494,7 +1463,6 @@ async def button_handler(
     await query.answer()
 
     user = query.from_user
-
     save_user(user)
 
     if is_blocked(user.id):
@@ -1505,23 +1473,15 @@ async def button_handler(
 
     data = query.data or ""
 
-    # -----------------------------------------------------
     # PREMIUM MENU
-    # -----------------------------------------------------
-
     if data == "premium_menu":
-
         await premium_menu(
             update,
             context,
         )
-
         return
 
-    # -----------------------------------------------------
     # STATUS
-    # -----------------------------------------------------
-
     if data == "my_status":
 
         if is_premium(user.id):
@@ -1539,7 +1499,6 @@ async def button_handler(
             )
 
             row = cursor.fetchone()
-
             conn.close()
 
             expiry = datetime.fromisoformat(
@@ -1568,16 +1527,17 @@ async def button_handler(
 
         return
 
-    # -----------------------------------------------------
     # HELP
-    # -----------------------------------------------------
-
     if data == "help":
+
+        used = get_today_image_count(
+            user.id
+        )
 
         await query.message.reply_text(
             "🤖 ETHIO AI — HELP\n\n"
             "💬 Chat is available.\n"
-            f"🖼️ Free image limit: {FREE_DAILY_IMAGE_LIMIT}/day.\n"
+            f"🖼️ Images today: {used}/{FREE_DAILY_IMAGE_LIMIT}\n"
             "💎 Premium: unlimited images.\n\n"
             "/premium - Upgrade\n"
             "/status - Check status"
@@ -1585,59 +1545,50 @@ async def button_handler(
 
         return
 
-    # -----------------------------------------------------
     # MONTHLY
-    # -----------------------------------------------------
-
     if data == "plan_monthly":
+
+        if has_pending_payment(user.id):
+            await query.message.reply_text(
+                "⏳ You already have a payment waiting for admin verification."
+            )
+            return
 
         await show_payment_instructions(
             query,
             "monthly",
             MONTHLY_PRICE_ETB,
         )
-
         return
 
-    # -----------------------------------------------------
     # YEARLY
-    # -----------------------------------------------------
-
     if data == "plan_yearly":
+
+        if has_pending_payment(user.id):
+            await query.message.reply_text(
+                "⏳ You already have a payment waiting for admin verification."
+            )
+            return
 
         await show_payment_instructions(
             query,
             "yearly",
             YEARLY_PRICE_ETB,
         )
-
         return
 
-    # -----------------------------------------------------
-    # PASTE PAYMENT SMS
-    # -----------------------------------------------------
+    # PASTE SMS
+    if data.startswith("paste_payment:"):
 
-    if data.startswith(
-        "paste_payment:"
-    ):
+        plan = data.split(":", 1)[1]
 
-        plan = data.split(
-            ":",
-            1,
-        )[1]
-
-        if plan not in (
-            "monthly",
-            "yearly",
-        ):
+        if plan not in ("monthly", "yearly"):
             await query.message.reply_text(
                 "❌ Invalid Premium plan."
             )
             return
 
-        if has_pending_payment(
-            user.id
-        ):
+        if has_pending_payment(user.id):
             await query.message.reply_text(
                 "⏳ You already have a payment waiting for admin verification."
             )
@@ -1648,15 +1599,15 @@ async def button_handler(
             plan,
         )
 
-        amount = expected_amount(
-            plan
-        )
+        amount = expected_amount(plan)
 
         await query.message.reply_text(
             "📩 PASTE FULL TELEBIRR SMS\n\n"
 
             f"💎 Plan: {plan_name(plan)}\n"
-            f"💰 Amount: {amount} ETB\n\n"
+            f"💰 Amount: {amount} ETB\n"
+            f"👤 Receiver: {TELEBIRR_NAME}\n"
+            f"📞 Number: {TELEBIRR_PHONE}\n\n"
 
             "🇬🇧 English:\n"
             "Copy the COMPLETE Telebirr SMS exactly as received and paste it here.\n"
@@ -1676,55 +1627,11 @@ async def button_handler(
 
         return
 
-    # -----------------------------------------------------
-    # PAYMENT SCREENSHOT MODE
-    # -----------------------------------------------------
-
-    if data.startswith(
-        "payment_screenshot:"
-    ):
-
-        plan = data.split(
-            ":",
-            1,
-        )[1]
-
-        if plan not in (
-            "monthly",
-            "yearly",
-        ):
-            await query.message.reply_text(
-                "❌ Invalid Premium plan."
-            )
-            return
-
-        if has_pending_payment(
-            user.id
-        ):
-            await query.message.reply_text(
-                "⏳ You already have a payment waiting for admin verification."
-            )
-            return
-
-        context.user_data[
-            "awaiting_payment_screenshot"
-        ] = plan
-
-        await query.message.reply_text(
-            "📸 SEND TELEBIRR SCREENSHOT\n\n"
-            "Please send the payment screenshot.\n\n"
-            "⚠️ For stronger verification, also send the FULL Telebirr SMS text."
-        )
-
-        return
-
-    # -----------------------------------------------------
+    # =====================================================
     # ADMIN APPROVE
-    # -----------------------------------------------------
+    # =====================================================
 
-    if data.startswith(
-        "approve_payment:"
-    ):
+    if data.startswith("approve_payment:"):
 
         if not is_admin(user.id):
             await query.message.reply_text(
@@ -1734,10 +1641,7 @@ async def button_handler(
 
         try:
             request_id = int(
-                data.split(
-                    ":",
-                    1,
-                )[1]
+                data.split(":", 1)[1]
             )
         except ValueError:
             await query.message.reply_text(
@@ -1761,8 +1665,6 @@ async def button_handler(
             )
             return
 
-        # IMPORTANT:
-        # Admin approval happens BEFORE premium activation.
         changed = update_payment_request(
             request_id,
             "approved",
@@ -1785,7 +1687,7 @@ async def button_handler(
         )
 
         caption = (
-            f"✅ PAYMENT VERIFIED & APPROVED\n\n"
+            "✅ PAYMENT VERIFIED & APPROVED\n\n"
             f"Request ID: #{request_id}\n"
             f"User ID: {request['user_id']}\n"
             f"Plan: {request['plan'].title()}\n"
@@ -1795,28 +1697,16 @@ async def button_handler(
         )
 
         try:
-
-            if query.message.photo:
-
-                await query.edit_message_caption(
-                    caption=caption,
-                    reply_markup=None,
-                )
-
-            else:
-
-                await query.edit_message_text(
-                    caption,
-                    reply_markup=None,
-                )
-
+            await query.edit_message_text(
+                caption,
+                reply_markup=None,
+            )
         except Exception:
             logger.exception(
                 "Could not edit admin payment message."
             )
 
         try:
-
             await context.bot.send_message(
                 chat_id=request["user_id"],
                 text=(
@@ -1847,13 +1737,11 @@ async def button_handler(
 
         return
 
-    # -----------------------------------------------------
+    # =====================================================
     # ADMIN REJECT
-    # -----------------------------------------------------
+    # =====================================================
 
-    if data.startswith(
-        "reject_payment:"
-    ):
+    if data.startswith("reject_payment:"):
 
         if not is_admin(user.id):
             await query.message.reply_text(
@@ -1863,10 +1751,7 @@ async def button_handler(
 
         try:
             request_id = int(
-                data.split(
-                    ":",
-                    1,
-                )[1]
+                data.split(":", 1)[1]
             )
         except ValueError:
             await query.message.reply_text(
@@ -1904,40 +1789,22 @@ async def button_handler(
             return
 
         try:
-
-            if query.message.photo:
-
-                await query.edit_message_caption(
-                    caption=(
-                        f"❌ PAYMENT REJECTED\n\n"
-                        f"Request ID: #{request_id}\n"
-                        f"User ID: {request['user_id']}\n"
-                        f"Plan: {request['plan'].title()}\n"
-                        f"Amount: {request['amount_etb']} ETB"
-                    ),
-                    reply_markup=None,
-                )
-
-            else:
-
-                await query.edit_message_text(
-                    (
-                        f"❌ PAYMENT REJECTED\n\n"
-                        f"Request ID: #{request_id}\n"
-                        f"User ID: {request['user_id']}\n"
-                        f"Plan: {request['plan'].title()}\n"
-                        f"Amount: {request['amount_etb']} ETB"
-                    ),
-                    reply_markup=None,
-                )
-
+            await query.edit_message_text(
+                (
+                    "❌ PAYMENT REJECTED\n\n"
+                    f"Request ID: #{request_id}\n"
+                    f"User ID: {request['user_id']}\n"
+                    f"Plan: {request['plan'].title()}\n"
+                    f"Amount: {request['amount_etb']} ETB"
+                ),
+                reply_markup=None,
+            )
         except Exception:
             logger.exception(
                 "Could not edit rejected payment message."
             )
 
         try:
-
             await context.bot.send_message(
                 chat_id=request["user_id"],
                 text=(
@@ -1945,18 +1812,17 @@ async def button_handler(
 
                     "🇬🇧 English:\n"
                     "Your payment could not be approved by the admin. "
-                    "Please check the amount and recipient and try again.\n\n"
+                    "Please check the amount, receiver and Telebirr SMS.\n\n"
 
                     "🇪🇹 Afaan Oromoo:\n"
                     "Kaffaltiin kee admin'n hin mirkanoofne. "
-                    "Hanga kaffaltii fi nama itti ergite sirriitti ilaaliitii irra deebi'i.\n\n"
+                    "Hanga kaffaltii, nama itti ergite fi SMS Telebirr sirriitti ilaali.\n\n"
 
                     "🇪🇹 አማርኛ:\n"
                     "ክፍያዎ በአስተዳዳሪው ሊረጋገጥ አልቻለም። "
-                    "የክፍያውን መጠን እና ተቀባዩን ያረጋግጡ።"
+                    "የክፍያውን መጠን፣ ተቀባዩን እና SMS ያረጋግጡ።"
                 ),
             )
-
         except Exception:
             logger.exception(
                 "Could not notify rejected user."
@@ -1970,8 +1836,8 @@ async def button_handler(
 # =========================================================
 
 async def payment_sms_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
+    update,
+    context,
 ):
     if not update.message:
         return
@@ -1980,7 +1846,6 @@ async def payment_sms_handler(
         return
 
     user = update.effective_user
-
     save_user(user)
 
     if is_blocked(user.id):
@@ -1989,24 +1854,17 @@ async def payment_sms_handler(
         )
         return
 
-    session = get_payment_session(
-        context
-    )
+    session = get_payment_session(context)
 
     if not session:
         return
 
-    if has_pending_payment(
-        user.id
-    ):
-        clear_payment_session(
-            context
-        )
+    if has_pending_payment(user.id):
+        clear_payment_session(context)
 
         await update.message.reply_text(
             "⏳ You already have a payment waiting for admin verification."
         )
-
         return
 
     text = (
@@ -2016,35 +1874,23 @@ async def payment_sms_handler(
     if not text:
         return
 
-    # -----------------------------------------------------
     # ATTEMPT
-    # -----------------------------------------------------
-
     session["attempts_used"] += 1
 
-    session["attempts_left"] = (
+    attempts_left = (
         MAX_PAYMENT_ATTEMPTS
         - session["attempts_used"]
     )
 
     plan = session["plan"]
+    amount = expected_amount(plan)
 
-    amount = expected_amount(
-        plan
-    )
-
-    # -----------------------------------------------------
-    # SHOW RECEIVED / VERIFYING
-    # -----------------------------------------------------
-
+    # RECEIVED MESSAGE
     await update.message.reply_text(
         payment_received_message()
     )
 
-    # -----------------------------------------------------
     # VALIDATE
-    # -----------------------------------------------------
-
     result = validate_payment_sms(
         text,
         amount,
@@ -2052,30 +1898,12 @@ async def payment_sms_handler(
 
     if not result["ok"]:
 
-        attempts_left = session[
-            "attempts_left"
-        ]
-
         if attempts_left <= 0:
 
-            clear_payment_session(
-                context
-            )
+            clear_payment_session(context)
 
             await update.message.reply_text(
-                "❌ PAYMENT FAILED\n\n"
-
-                "🇬🇧 English:\n"
-                "You have used all 5 attempts.\n"
-                "⏱️ Payment verification is locked for 15 minutes.\n\n"
-
-                "🇪🇹 Afaan Oromoo:\n"
-                "Carraa 5 hunda fayyadamteetta.\n"
-                "⏱️ Mirkaneessi kaffaltii daqiiqaa 15f cufameera.\n\n"
-
-                "🇪🇹 አማርኛ:\n"
-                "5ቱንም ሙከራዎች ተጠቅመዋል።\n"
-                "⏱️ የክፍያ ማረጋገጫ ለ15 ደቂቃ ተቋርጧል።"
+                payment_locked_message()
             )
 
             return
@@ -2091,30 +1919,11 @@ async def payment_sms_handler(
 
         return
 
-    # -----------------------------------------------------
-    # SUCCESSFUL LOCAL CHECK
-    # -----------------------------------------------------
+    transaction_id = result["transaction_id"]
 
-    transaction_id = (
-        result["transaction_id"]
-    )
-
-    # -----------------------------------------------------
-    # NO TRANSACTION ID WARNING
-    # -----------------------------------------------------
-
-    transaction_note = ""
-
-    if not transaction_id:
-
-        transaction_note = (
-            "\n\n⚠️ No transaction/reference ID was detected automatically. "
-            "Admin must verify the SMS manually."
-        )
-
-    # -----------------------------------------------------
+    # =====================================================
     # CREATE PENDING REQUEST
-    # -----------------------------------------------------
+    # =====================================================
 
     try:
 
@@ -2124,15 +1933,12 @@ async def payment_sms_handler(
             amount,
             text,
             transaction_id,
-            None,
             session["attempts_used"],
         )
 
     except sqlite3.IntegrityError:
 
-        clear_payment_session(
-            context
-        )
+        clear_payment_session(context)
 
         await update.message.reply_text(
             "🚫 DUPLICATE TRANSACTION\n\n"
@@ -2149,197 +1955,46 @@ async def payment_sms_handler(
 
         return
 
-    clear_payment_session(
-        context
-    )
+    clear_payment_session(context)
 
-    # -----------------------------------------------------
-    # USER PENDING MESSAGE
-    # -----------------------------------------------------
+    # =====================================================
+    # USER PENDING
+    # =====================================================
 
     await update.message.reply_text(
-        "✅ PAYMENT DETAILS RECEIVED\n\n"
+        "⏳ PAYMENT PENDING ADMIN VERIFICATION\n\n"
 
         "🇬🇧 English:\n"
         f"Request ID: #{request_id}\n"
         f"💎 Plan: {plan_name(plan)}\n"
         f"💰 Amount: {amount} ETB\n"
         f"🔢 Transaction ID: {transaction_id or 'Not detected'}\n"
-        "⏳ Your payment is now waiting for admin verification.\n"
-        "💎 Premium will activate ONLY after admin approval."
-        f"{transaction_note}\n\n"
+        "Your payment details passed the initial checks.\n"
+        "An admin must independently verify the transaction.\n"
+        "💎 Premium will activate ONLY after admin approval.\n\n"
 
         "🇪🇹 Afaan Oromoo:\n"
         f"Request ID: #{request_id}\n"
         f"💎 Karoora: {plan_name(plan)}\n"
         f"💰 Hanga: {amount} ETB\n"
         f"🔢 Transaction ID: {transaction_id or 'Hin argamne'}\n"
-        "⏳ Kaffaltiin kee amma admin akka mirkaneessuuf eegaa jira.\n"
-        "💎 Premium kan banamu admin erga mirkaneesse booda qofa.\n\n"
+        "Odeeffannoon kaffaltii kee sakatta'iinsa jalqabaa darbeera.\n"
+        "Admin transaction sana ofumaan mirkaneessuu qaba.\n"
+        "💎 Premium kan banamu admin erga raggaasise booda qofa.\n\n"
 
         "🇪🇹 አማርኛ:\n"
         f"Request ID: #{request_id}\n"
         f"💎 ፕላን፦ {plan_name(plan)}\n"
         f"💰 መጠን፦ {amount} ETB\n"
         f"🔢 Transaction ID፦ {transaction_id or 'አልተገኘም'}\n"
-        "⏳ ክፍያዎ አስተዳዳሪው እስኪያረጋግጥ ድረስ በመጠባበቅ ላይ ነው።\n"
+        "የክፍያዎ መረጃ የመጀመሪያ ማጣሪያውን አልፏል።\n"
+        "አስተዳዳሪው ግብይቱን በተናጠል ማረጋገጥ አለበት።\n"
         "💎 Premium የሚነቃው አስተዳዳሪው ካጸደቀ በኋላ ብቻ ነው።"
     )
 
-    # -----------------------------------------------------
-    # ADMIN MESSAGE
-    # -----------------------------------------------------
-
-    name = (
-        f"{user.first_name or ''} "
-        f"{user.last_name or ''}"
-    ).strip()
-
-    username = (
-        f"@{user.username}"
-        if user.username
-        else "No username"
-    )
-
-    admin_keyboard = [
-        [
-            InlineKeyboardButton(
-                "✅ VERIFY & APPROVE",
-                callback_data=f"approve_payment:{request_id}",
-            ),
-            InlineKeyboardButton(
-                "❌ REJECT",
-                callback_data=f"reject_payment:{request_id}",
-            ),
-        ]
-    ]
-
-    admin_text = (
-        "💰 NEW TELEBIRR PAYMENT\n\n"
-        f"🆔 Request: #{request_id}\n"
-        f"👤 Name: {name or 'Unknown'}\n"
-        f"🔹 Username: {username}\n"
-        f"🆔 Telegram ID: {user.id}\n"
-        f"💎 Plan: {plan_name(plan)}\n"
-        f"💰 Expected Amount: {amount} ETB\n"
-        f"🔢 Transaction ID: {transaction_id or 'Not detected'}\n"
-        f"🕐 Time: {now_iso()}\n\n"
-
-        "⚠️ LOCAL CHECK PASSED.\n"
-        "This does NOT prove that the payment is real.\n"
-        "👨‍💼 Admin MUST independently verify the transaction in Telebirr before approving.\n\n"
-
-        "📩 FULL TELEBIRR SMS:\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"{text}\n"
-        "━━━━━━━━━━━━━━━━━━━━"
-    )
-
-    try:
-
-        await context.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=admin_text,
-            reply_markup=InlineKeyboardMarkup(
-                admin_keyboard
-            ),
-        )
-
-    except Exception:
-
-        logger.exception(
-            "Could not send payment request to admin."
-        )
-
-        await update.message.reply_text(
-            "⚠️ Payment details were saved, but the admin could not be notified automatically."
-        )
-
-
-# =========================================================
-# PAYMENT SCREENSHOT HANDLER
-# =========================================================
-
-async def payment_screenshot_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    if not update.message:
-        return
-
-    if not update.effective_user:
-        return
-
-    user = update.effective_user
-
-    save_user(user)
-
-    if is_blocked(user.id):
-        await update.message.reply_text(
-            "🚫 Your access has been blocked."
-        )
-        return
-
-    plan = context.user_data.get(
-        "awaiting_payment_screenshot"
-    )
-
-    if not plan:
-        return
-
-    if not update.message.photo:
-        await update.message.reply_text(
-            "📸 Please send the Telebirr payment screenshot."
-        )
-        return
-
-    if has_pending_payment(
-        user.id
-    ):
-        context.user_data.pop(
-            "awaiting_payment_screenshot",
-            None,
-        )
-
-        await update.message.reply_text(
-            "⏳ You already have a payment request pending review."
-        )
-
-        return
-
-    amount = expected_amount(
-        plan
-    )
-
-    photo = update.message.photo[-1]
-
-    file_id = photo.file_id
-
-    # Screenshot alone is pending.
-    request_id = create_payment_request(
-        user.id,
-        plan,
-        amount,
-        "",
-        None,
-        file_id,
-        0,
-    )
-
-    context.user_data.pop(
-        "awaiting_payment_screenshot",
-        None,
-    )
-
-    await update.message.reply_text(
-        "📸 PAYMENT SCREENSHOT RECEIVED\n\n"
-        f"Request ID: #{request_id}\n"
-        f"Plan: {plan_name(plan)}\n"
-        f"Amount: {amount} ETB\n\n"
-        "⏳ Waiting for admin verification.\n"
-        "💎 Premium activates ONLY after admin approval.\n\n"
-        "📩 For stronger verification, send the FULL Telebirr SMS too."
-    )
+    # =====================================================
+    # ADMIN NOTIFICATION
+    # =====================================================
 
     name = (
         f"{user.first_name or ''} "
@@ -2365,23 +2020,33 @@ async def payment_screenshot_handler(
         ]
     ]
 
+    admin_text = (
+        "💰 NEW TELEBIRR PAYMENT\n\n"
+
+        f"🆔 Request: #{request_id}\n"
+        f"👤 Name: {name or 'Unknown'}\n"
+        f"🔹 Username: {username}\n"
+        f"🆔 Telegram ID: {user.id}\n"
+        f"💎 Plan: {plan_name(plan)}\n"
+        f"💰 Expected Amount: {amount} ETB\n"
+        f"🔢 Transaction ID: {transaction_id or 'Not detected'}\n"
+        f"🕐 Time: {now_iso()}\n\n"
+
+        "⚠️ INITIAL CHECK PASSED.\n"
+        "This does NOT prove that the payment is real.\n"
+        "👨‍💼 Admin MUST independently verify the transaction in Telebirr before approving.\n\n"
+
+        "📩 FULL TELEBIRR SMS:\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"{text}\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    )
+
     try:
 
-        await context.bot.send_photo(
+        await context.bot.send_message(
             chat_id=ADMIN_ID,
-            photo=file_id,
-            caption=(
-                "💰 NEW TELEBIRR PAYMENT — SCREENSHOT\n\n"
-                f"🆔 Request: #{request_id}\n"
-                f"👤 Name: {name or 'Unknown'}\n"
-                f"🔹 Username: {username}\n"
-                f"🆔 Telegram ID: {user.id}\n"
-                f"💎 Plan: {plan_name(plan)}\n"
-                f"💰 Amount: {amount} ETB\n"
-                f"🕐 Time: {now_iso()}\n\n"
-                "⚠️ Screenshot is NOT automatic proof.\n"
-                "👨‍💼 Verify independently in Telebirr before approval."
-            ),
+            text=admin_text,
             reply_markup=InlineKeyboardMarkup(
                 keyboard
             ),
@@ -2390,139 +2055,12 @@ async def payment_screenshot_handler(
     except Exception:
 
         logger.exception(
-            "Could not send screenshot to admin."
+            "Could not send payment request to admin."
         )
 
         await update.message.reply_text(
-            "⚠️ Screenshot saved, but admin notification failed."
-        )
-
-
-# =========================================================
-# TEXT CHAT
-# =========================================================
-
-async def chat(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    if not update.message:
-        return
-
-    if not update.effective_user:
-        return
-
-    user = update.effective_user
-
-    save_user(user)
-
-    if is_blocked(user.id):
-        await update.message.reply_text(
-            "🚫 Your access to Ethio AI has been blocked."
-        )
-        return
-
-    # -----------------------------------------------------
-    # PAYMENT SMS HAS PRIORITY
-    # -----------------------------------------------------
-
-    if get_payment_session(
-        context
-    ):
-        await payment_sms_handler(
-            update,
-            context,
-        )
-        return
-
-    # -----------------------------------------------------
-    # SCREENSHOT FLOW
-    # -----------------------------------------------------
-
-    if context.user_data.get(
-        "awaiting_payment_screenshot"
-    ):
-        await update.message.reply_text(
-            "📸 Please send your Telebirr payment screenshot."
-        )
-        return
-
-    user_message = (
-        update.message.text or ""
-    ).strip()
-
-    if not user_message:
-        return
-
-    try:
-
-        await update.effective_chat.send_action(
-            action="typing"
-        )
-
-        prompt = f"""
-You are Ethio AI, an intelligent AI assistant.
-
-Your name is Ethio AI.
-
-If the user asks:
-"What is your name?"
-Answer:
-"My name is Ethio AI."
-
-If the user asks what technology you use,
-answer:
-"I am powered by Google Gemini."
-
-Language rules:
-- If the user writes Afaan Oromoo, respond in Afaan Oromoo.
-- If the user writes English, respond in English.
-- If the user writes Amharic, respond in Amharic.
-- If the user mixes languages, respond naturally in the same style.
-
-Be helpful, accurate and clear.
-
-User message:
-{user_message}
-"""
-
-        response = await asyncio.to_thread(
-            client.models.generate_content,
-            model=MODEL,
-            contents=prompt,
-        )
-
-        answer = (
-            response.text
-            if response
-            and response.text
-            else None
-        )
-
-        if not answer:
-            await update.message.reply_text(
-                "⚠️ I could not generate a response."
-            )
-            return
-
-        for i in range(
-            0,
-            len(answer),
-            4000,
-        ):
-            await update.message.reply_text(
-                answer[i:i + 4000]
-            )
-
-    except Exception as e:
-
-        logger.exception(
-            "TEXT CHAT ERROR"
-        )
-
-        await update.message.reply_text(
-            "⚠️ Ethio AI error.\n\n"
-            f"{type(e).__name__}: {e}"
+            "⚠️ Payment details were saved, "
+            "but the admin could not be notified automatically."
         )
 
 
@@ -2530,10 +2068,7 @@ User message:
 # IMAGE AI
 # =========================================================
 
-async def image_chat(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def image_chat(update, context):
     if not update.message:
         return
 
@@ -2541,7 +2076,6 @@ async def image_chat(
         return
 
     user = update.effective_user
-
     save_user(user)
 
     if is_blocked(user.id):
@@ -2550,39 +2084,19 @@ async def image_chat(
         )
         return
 
-    # -----------------------------------------------------
-    # PAYMENT SCREENSHOT PRIORITY
-    # -----------------------------------------------------
+    # PAYMENT SESSION HAS PRIORITY
+    if get_payment_session(context):
 
-    if context.user_data.get(
-        "awaiting_payment_screenshot"
-    ):
-        await payment_screenshot_handler(
-            update,
-            context,
-        )
-        return
-
-    # -----------------------------------------------------
-    # PAYMENT SESSION
-    # -----------------------------------------------------
-
-    if get_payment_session(
-        context
-    ):
         await update.message.reply_text(
-            "📩 Please paste the FULL Telebirr SMS as text, not only an image."
+            "📩 Please paste the FULL Telebirr SMS as text.\n\n"
+            "📸 Screenshot payment is not used."
         )
+
         return
 
-    premium = is_premium(
-        user.id
-    )
+    premium = is_premium(user.id)
 
-    # -----------------------------------------------------
     # FREE LIMIT
-    # -----------------------------------------------------
-
     if not premium:
 
         used = get_today_image_count(
@@ -2593,7 +2107,9 @@ async def image_chat(
 
             await update.message.reply_text(
                 "🆓 DAILY IMAGE LIMIT REACHED\n\n"
-                f"🖼️ Images today: {FREE_DAILY_IMAGE_LIMIT}/{FREE_DAILY_IMAGE_LIMIT}\n\n"
+                f"🖼️ Images today: "
+                f"{FREE_DAILY_IMAGE_LIMIT}/"
+                f"{FREE_DAILY_IMAGE_LIMIT}\n\n"
                 "💎 Upgrade to Premium for UNLIMITED image analysis.",
                 reply_markup=InlineKeyboardMarkup(
                     [
@@ -2608,10 +2124,6 @@ async def image_chat(
             )
 
             return
-
-        record_free_image(
-            user.id
-        )
 
     question = (
         update.message.caption
@@ -2698,6 +2210,12 @@ User's question:
 
             return
 
+        # Record only after successful AI response
+        if not premium:
+            record_image_usage(
+                user.id
+            )
+
         for i in range(
             0,
             len(answer),
@@ -2716,12 +2234,12 @@ User's question:
 
             remaining = max(
                 0,
-                FREE_DAILY_IMAGE_LIMIT
-                - current,
+                FREE_DAILY_IMAGE_LIMIT - current,
             )
 
             await update.message.reply_text(
-                f"🖼️ Images today: {current}/{FREE_DAILY_IMAGE_LIMIT}\n"
+                f"🖼️ Images today: "
+                f"{current}/{FREE_DAILY_IMAGE_LIMIT}\n"
                 f"Remaining today: {remaining}"
             )
 
@@ -2738,13 +2256,122 @@ User's question:
 
 
 # =========================================================
+# TEXT CHAT
+# =========================================================
+
+async def chat(update, context):
+    if not update.message:
+        return
+
+    if not update.effective_user:
+        return
+
+    user = update.effective_user
+    save_user(user)
+
+    if is_blocked(user.id):
+        await update.message.reply_text(
+            "🚫 Your access to Ethio AI has been blocked."
+        )
+        return
+
+    # PAYMENT SMS HAS PRIORITY
+    if get_payment_session(context):
+
+        await payment_sms_handler(
+            update,
+            context,
+        )
+
+        return
+
+    user_message = (
+        update.message.text or ""
+    ).strip()
+
+    if not user_message:
+        return
+
+    try:
+
+        await update.effective_chat.send_action(
+            action="typing"
+        )
+
+        prompt = f"""
+You are Ethio AI, an intelligent AI assistant.
+
+Your name is Ethio AI.
+
+If the user asks:
+"What is your name?"
+Answer:
+"My name is Ethio AI."
+
+If the user asks what technology you use,
+answer:
+"I am powered by Google Gemini."
+
+Language rules:
+- If the user writes Afaan Oromoo, respond in Afaan Oromoo.
+- If the user writes English, respond in English.
+- If the user writes Amharic, respond in Amharic.
+- If the user mixes languages, respond naturally in the same style.
+
+Be helpful, accurate and clear.
+
+User message:
+{user_message}
+"""
+
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=MODEL,
+            contents=prompt,
+        )
+
+        answer = (
+            response.text
+            if response
+            and response.text
+            else None
+        )
+
+        if not answer:
+
+            await update.message.reply_text(
+                "⚠️ I could not generate a response."
+            )
+
+            return
+
+        for i in range(
+            0,
+            len(answer),
+            4000,
+        ):
+
+            await update.message.reply_text(
+                answer[i:i + 4000]
+            )
+
+    except Exception as e:
+
+        logger.exception(
+            "TEXT CHAT ERROR"
+        )
+
+        await update.message.reply_text(
+            "⚠️ Ethio AI error.\n\n"
+            f"{type(e).__name__}: {e}"
+        )
+
+
+# =========================================================
 # ADMIN DASHBOARD
 # =========================================================
 
-async def admin_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def admin_command(update, context):
     if not update.effective_user:
         return
 
@@ -2766,9 +2393,7 @@ async def admin_command(
         "SELECT COUNT(*) AS count FROM users"
     )
 
-    total_users = cursor.fetchone()[
-        "count"
-    ]
+    total_users = cursor.fetchone()["count"]
 
     cursor.execute(
         """
@@ -2780,9 +2405,7 @@ async def admin_command(
         (now_iso(),),
     )
 
-    premium_users = cursor.fetchone()[
-        "count"
-    ]
+    premium_users = cursor.fetchone()["count"]
 
     cursor.execute(
         """
@@ -2793,9 +2416,7 @@ async def admin_command(
         """
     )
 
-    free_users = cursor.fetchone()[
-        "count"
-    ]
+    free_users = cursor.fetchone()["count"]
 
     cursor.execute(
         """
@@ -2812,9 +2433,7 @@ async def admin_command(
         ),
     )
 
-    active_24h = cursor.fetchone()[
-        "count"
-    ]
+    active_24h = cursor.fetchone()["count"]
 
     cursor.execute(
         """
@@ -2824,9 +2443,7 @@ async def admin_command(
         """
     )
 
-    pending_payments = cursor.fetchone()[
-        "count"
-    ]
+    pending_payments = cursor.fetchone()["count"]
 
     cursor.execute(
         """
@@ -2843,9 +2460,7 @@ async def admin_command(
         ),
     )
 
-    monthly_users = cursor.fetchone()[
-        "count"
-    ]
+    monthly_users = cursor.fetchone()["count"]
 
     conn.close()
 
@@ -2873,10 +2488,7 @@ async def admin_command(
 # USERS
 # =========================================================
 
-async def users_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def users_command(update, context):
     if not update.effective_user:
         return
 
@@ -2915,54 +2527,37 @@ async def users_command(
     conn.close()
 
     if not rows:
-
         await update.message.reply_text(
             "No users yet."
         )
-
         return
 
-    text = (
-        "👥 ETHIO AI — USERS\n\n"
-    )
+    text = "👥 ETHIO AI — USERS\n\n"
 
     for row in rows:
 
-        name = (
-            row["first_name"]
-            or
-            "Unknown"
-        )
+        name = row["first_name"] or "Unknown"
 
         if row["last_name"]:
-            name += (
-                " "
-                + row["last_name"]
-            )
+            name += " " + row["last_name"]
 
         username = (
-            "@"
-            + row["username"]
+            "@" + row["username"]
             if row["username"]
-            else
-            "No username"
+            else "No username"
         )
 
         if row["blocked"]:
-
             status = "🚫 BLOCKED"
 
         elif row["status"] == "premium":
 
-            if is_premium(
-                row["user_id"]
-            ):
+            if is_premium(row["user_id"]):
                 status = "💎 PREMIUM"
             else:
                 status = "🆓 FREE"
 
         else:
-
             status = "🆓 FREE"
 
         premium_until = (
@@ -2988,7 +2583,6 @@ async def users_command(
             text = ""
 
     if text:
-
         await update.message.reply_text(
             text
         )
@@ -2998,10 +2592,7 @@ async def users_command(
 # STATS
 # =========================================================
 
-async def stats_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def stats_command(update, context):
     if not update.effective_user:
         return
 
@@ -3035,9 +2626,7 @@ async def stats_command(
         (now_iso(),),
     )
 
-    premium = cursor.fetchone()[
-        "count"
-    ]
+    premium = cursor.fetchone()["count"]
 
     cursor.execute(
         """
@@ -3048,9 +2637,7 @@ async def stats_command(
         """
     )
 
-    free = cursor.fetchone()[
-        "count"
-    ]
+    free = cursor.fetchone()["count"]
 
     cursor.execute(
         """
@@ -3060,9 +2647,7 @@ async def stats_command(
         """
     )
 
-    blocked = cursor.fetchone()[
-        "count"
-    ]
+    blocked = cursor.fetchone()["count"]
 
     cursor.execute(
         """
@@ -3079,9 +2664,7 @@ async def stats_command(
         ),
     )
 
-    active = cursor.fetchone()[
-        "count"
-    ]
+    active = cursor.fetchone()["count"]
 
     cursor.execute(
         """
@@ -3098,9 +2681,7 @@ async def stats_command(
         ),
     )
 
-    monthly = cursor.fetchone()[
-        "count"
-    ]
+    monthly = cursor.fetchone()["count"]
 
     cursor.execute(
         """
@@ -3110,9 +2691,7 @@ async def stats_command(
         """
     )
 
-    pending = cursor.fetchone()[
-        "count"
-    ]
+    pending = cursor.fetchone()["count"]
 
     cursor.execute(
         """
@@ -3122,9 +2701,7 @@ async def stats_command(
         """
     )
 
-    approved_payments = cursor.fetchone()[
-        "count"
-    ]
+    approved_payments = cursor.fetchone()["count"]
 
     conn.close()
 
@@ -3145,10 +2722,7 @@ async def stats_command(
 # PENDING PAYMENTS
 # =========================================================
 
-async def pending_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def pending_command(update, context):
     if not update.effective_user:
         return
 
@@ -3198,9 +2772,7 @@ async def pending_command(
 
         return
 
-    text = (
-        "💰 PENDING PAYMENTS\n\n"
-    )
+    text = "💰 PENDING PAYMENTS\n\n"
 
     for row in rows:
 
@@ -3209,17 +2781,12 @@ async def pending_command(
             f"{row['last_name'] or ''}"
         ).strip()
 
-        name = (
-            name
-            or
-            "Unknown"
-        )
+        name = name or "Unknown"
 
         username = (
             f"@{row['username']}"
             if row["username"]
-            else
-            "No username"
+            else "No username"
         )
 
         text += (
@@ -3229,7 +2796,8 @@ async def pending_command(
             f"Telegram ID: {row['user_id']}\n"
             f"💎 Plan: {row['plan'].title()}\n"
             f"💰 Amount: {row['amount_etb']} ETB\n"
-            f"🔢 Transaction: {row['transaction_id'] or 'Not detected'}\n"
+            f"🔢 Transaction: "
+            f"{row['transaction_id'] or 'Not detected'}\n"
             f"🕐 {row['created_at']}\n\n"
         )
 
@@ -3242,10 +2810,7 @@ async def pending_command(
 # ADMIN PREMIUM
 # =========================================================
 
-async def premium_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def premium_command(update, context):
     if not update.effective_user:
         return
 
@@ -3347,13 +2912,10 @@ async def premium_command(
 
 
 # =========================================================
-# FREE COMMAND
+# FREE
 # =========================================================
 
-async def free_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def free_command(update, context):
     if not update.effective_user:
         return
 
@@ -3390,9 +2952,7 @@ async def free_command(
 
         return
 
-    set_free(
-        target_id
-    )
+    set_free(target_id)
 
     await update.message.reply_text(
         "🆓 User changed to Free.\n\n"
@@ -3404,10 +2964,7 @@ async def free_command(
 # BLOCK
 # =========================================================
 
-async def block_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def block_command(update, context):
     if not update.effective_user:
         return
 
@@ -3444,9 +3001,7 @@ async def block_command(
 
         return
 
-    set_block(
-        target_id
-    )
+    set_block(target_id)
 
     await update.message.reply_text(
         "🚫 User blocked.\n\n"
@@ -3458,10 +3013,7 @@ async def block_command(
 # UNBLOCK
 # =========================================================
 
-async def unblock_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def unblock_command(update, context):
     if not update.effective_user:
         return
 
@@ -3498,9 +3050,7 @@ async def unblock_command(
 
         return
 
-    set_unblock(
-        target_id
-    )
+    set_unblock(target_id)
 
     await update.message.reply_text(
         "🟢 User unblocked.\n\n"
@@ -3509,13 +3059,10 @@ async def unblock_command(
 
 
 # =========================================================
-# ERROR HANDLER
+# ERROR
 # =========================================================
 
-async def error_handler(
-    update: object,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+async def error_handler(update, context):
     logger.exception(
         "UNHANDLED ERROR",
         exc_info=context.error,
@@ -3564,9 +3111,9 @@ def main():
         .build()
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # USER COMMANDS
-    # -----------------------------------------------------
+    # =====================================================
 
     app.add_handler(
         CommandHandler(
@@ -3596,9 +3143,9 @@ def main():
         )
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # ADMIN COMMANDS
-    # -----------------------------------------------------
+    # =====================================================
 
     app.add_handler(
         CommandHandler(
@@ -3656,9 +3203,9 @@ def main():
         )
     )
 
-    # -----------------------------------------------------
-    # BUTTONS
-    # -----------------------------------------------------
+    # =====================================================
+    # CALLBACK BUTTONS
+    # =====================================================
 
     app.add_handler(
         CallbackQueryHandler(
@@ -3666,9 +3213,9 @@ def main():
         )
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # PHOTOS
-    # -----------------------------------------------------
+    # =====================================================
 
     app.add_handler(
         MessageHandler(
@@ -3677,21 +3224,20 @@ def main():
         )
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # TEXT
-    # -----------------------------------------------------
+    # =====================================================
 
     app.add_handler(
         MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
+            filters.TEXT & ~filters.COMMAND,
             chat,
         )
     )
 
-    # -----------------------------------------------------
+    # =====================================================
     # ERROR
-    # -----------------------------------------------------
+    # =====================================================
 
     app.add_error_handler(
         error_handler
