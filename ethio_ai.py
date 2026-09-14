@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sqlite3
+import tempfile
 from urllib.parse import quote
 from datetime import datetime, timezone, timedelta
 
@@ -1348,17 +1349,12 @@ async def show_payment_instructions(
     plan,
     amount,
 ):
-    plan_name = (
-        "Monthly Premium"
-        if plan == "monthly"
-        else "Yearly Premium"
-    )
-
+    """Show Telebirr payment instructions. Screenshot upload is not used."""
     keyboard = [
         [
             InlineKeyboardButton(
-                "📸 I Paid — Upload Screenshot",
-                callback_data=f"upload_payment:{plan}",
+                "✅ I Paid — Send Confirmation",
+                callback_data=f"paid_payment:{plan}",
             )
         ],
         [
@@ -1369,18 +1365,30 @@ async def show_payment_instructions(
         ],
     ]
 
+    payment_text = (
+        "✅ Your Order Summary\n"
+        "Product: PUBG MOBILE INSTANT⚡️ - 120 UC\n"
+        "Player ID: 52066282099\n"
+        "Player Name: TRIPLE・YIDNE\n"
+        "Price: 380.00 ETB\n"
+        "Bank: Telebirr\n\n"
+        "Please send exactly 380.00 ETB to:\n"
+        "•   Name: Akerem Abas Abdela\n"
+        "•   Account: 0985708870\n\n"
+        "⚠️ Legal Warning / የህግ ማሳሰቢያ:\n"
+        "By paying, you confirm you are 18+ and agree to our Terms (https://t.me/ethiogamerprice/149).\n"
+        "ክፍያ ሲፈጽሙ ዕድሜዎ 18+ መሆኑን እና በደንቡ መስማማትዎን ያረጋግጣሉ።\n\n"
+        "1. ከላይ ወደ ተቀመጠው አካውንት ትክክለኛውን ሂሳብ ያስገቡ።\n"
+        "2. ክፍያውን እንደፈጸሙ ከ Telebirr (127) የሚደርስዎትን የ SMS መልእክት ይመልከቱ።\n"
+        "3. ⚠️ ማሳሰቢያ፡ ልክ ከላይ በምስሉ ላይ እንደተመለከተው፣ ክፍያውን ሲፈጽሙ ከ Telebirr የተላከሎትን መልእክት ሙሉውን (Copy) ያድርጉ።\n"
+        "4. ኮፒ ያደረጉትን ሙሉ መልእክት እዚህ በመላክ ትዕዛዝዎን ወዲያውኑ ይቀበሉ!\n\n"
+        "(This order will expire in 30 minutes)"
+    )
+
     await query.edit_message_text(
-        "📱 TELEBIRR PAYMENT\n\n"
-        f"💎 Plan: {plan_name}\n"
-        f"💰 Amount: {amount} ETB\n\n"
-        f"👤 Name: {TELEBIRR_NAME}\n"
-        f"📞 Telebirr: {TELEBIRR_PHONE}\n\n"
-        "1️⃣ Send the exact amount using Telebirr.\n"
-        "2️⃣ Keep your payment confirmation.\n"
-        "3️⃣ Tap the button below.\n"
-        "4️⃣ Upload your Telebirr payment screenshot.\n\n"
-        "⚠️ Premium is activated only after admin verifies the payment.",
+        payment_text,
         reply_markup=InlineKeyboardMarkup(keyboard),
+        disable_web_page_preview=True,
     )
 
 
@@ -1478,36 +1486,26 @@ async def button_handler(
         )
         return
 
-    if data.startswith("upload_payment:"):
+    if data.startswith("paid_payment:"):
         plan = data.split(":", 1)[1]
 
         if plan not in ("monthly", "yearly"):
-            await query.message.reply_text(
-                "❌ Invalid Premium plan."
-            )
+            await query.message.reply_text("❌ Invalid Premium plan.")
             return
 
         if has_pending_payment(user.id):
             await query.message.reply_text(
-                "⏳ You already have a payment screenshot waiting for admin verification.\n\n"
+                "⏳ You already have a payment confirmation waiting for admin verification.\n\n"
                 "Please wait for the result."
             )
             return
 
-        context.user_data["awaiting_payment_screenshot"] = plan
-
-        amount = (
-            MONTHLY_PRICE_ETB
-            if plan == "monthly"
-            else YEARLY_PRICE_ETB
-        )
+        context.user_data["awaiting_payment_confirmation"] = plan
 
         await query.message.reply_text(
-            "📸 PAYMENT SCREENSHOT\n\n"
-            f"Plan: {plan.title()}\n"
-            f"Amount: {amount} ETB\n\n"
-            "Now send your Telebirr payment screenshot here.\n\n"
-            "⚠️ Do not send your password or private financial information."
+            "📩 PAYMENT CONFIRMATION\n\n"
+            "Please copy the FULL Telebirr SMS confirmation and send it here as a text message.\n\n"
+            "⚠️ Do not send a screenshot. Send the copied SMS text only."
         )
         return
 
@@ -1559,17 +1557,21 @@ async def button_handler(
             )
             return
 
-        await query.edit_message_caption(
-            caption=(
-                f"✅ APPROVED\n\n"
-                f"Request ID: {request_id}\n"
-                f"User ID: {request['user_id']}\n"
-                f"Plan: {request['plan'].title()}\n"
-                f"Amount: {request['amount_etb']} ETB\n"
-                f"Expires: {expiry.strftime('%Y-%m-%d %H:%M UTC')}"
-            ),
-            reply_markup=None,
+        approved_text = (
+            f"✅ APPROVED\n\n"
+            f"Request ID: {request_id}\n"
+            f"User ID: {request['user_id']}\n"
+            f"Plan: {request['plan'].title()} Premium\n"
+            f"Amount: {request['amount_etb']} ETB\n"
+            f"Expires: {expiry.strftime('%Y-%m-%d %H:%M UTC')}"
         )
+        try:
+            await query.edit_message_text(approved_text, reply_markup=None)
+        except Exception:
+            try:
+                await query.edit_message_caption(caption=approved_text, reply_markup=None)
+            except Exception:
+                logger.exception("Could not update approved payment message.")
 
         try:
             await context.bot.send_message(
@@ -1619,7 +1621,7 @@ async def button_handler(
             request_id,
             "rejected",
             user.id,
-            "Payment screenshot rejected by admin.",
+            "Telebirr payment could not be verified by admin.",
         )
 
         if not changed:
@@ -1628,24 +1630,28 @@ async def button_handler(
             )
             return
 
-        await query.edit_message_caption(
-            caption=(
-                f"❌ REJECTED\n\n"
-                f"Request ID: {request_id}\n"
-                f"User ID: {request['user_id']}\n"
-                f"Plan: {request['plan'].title()}\n"
-                f"Amount: {request['amount_etb']} ETB"
-            ),
-            reply_markup=None,
+        rejected_text = (
+            f"❌ REJECTED\n\n"
+            f"Request ID: {request_id}\n"
+            f"User ID: {request['user_id']}\n"
+            f"Plan: {request['plan'].title()} Premium\n"
+            f"Amount: {request['amount_etb']} ETB"
         )
+        try:
+            await query.edit_message_text(rejected_text, reply_markup=None)
+        except Exception:
+            try:
+                await query.edit_message_caption(caption=rejected_text, reply_markup=None)
+            except Exception:
+                logger.exception("Could not update rejected payment message.")
 
         try:
             await context.bot.send_message(
                 chat_id=request["user_id"],
                 text=(
                     "❌ PAYMENT REJECTED\n\n"
-                    "Your Telebirr payment screenshot could not be approved.\n"
-                    "Please contact the administrator and send a valid payment confirmation."
+                    "Your Telebirr payment could not be verified.\n"
+                    "Please contact the administrator if you believe the payment was successful."
                 ),
             )
         except Exception:
@@ -1657,13 +1663,102 @@ async def button_handler(
 
 
 # =========================================================
-# PAYMENT SCREENSHOT
+# PAYMENT CONFIRMATION (COPIED TELEBIRR SMS)
 # =========================================================
 
-async def payment_screenshot_handler(
+async def payment_confirmation_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+    """Receive copied Telebirr SMS text. No screenshot is accepted."""
+    if not update.message or not update.effective_user:
+        return
+
+    user = update.effective_user
+    save_user(user)
+
+    if is_blocked(user.id):
+        await update.message.reply_text("🚫 Your access has been blocked.")
+        return
+
+    plan = context.user_data.get("awaiting_payment_confirmation")
+    if not plan:
+        return
+
+    confirmation = (update.message.text or "").strip()
+    if not confirmation:
+        await update.message.reply_text(
+            "❌ Please send the copied Telebirr SMS as text."
+        )
+        return
+
+    amount = MONTHLY_PRICE_ETB if plan == "monthly" else YEARLY_PRICE_ETB
+
+    request_id = create_payment_request(
+        user.id,
+        plan,
+        amount,
+        "",
+    )
+
+    context.user_data.pop("awaiting_payment_confirmation", None)
+
+    await update.message.reply_text(
+        "✅ PAYMENT CONFIRMATION RECEIVED\n\n"
+        f"Request ID: #{request_id}\n"
+        f"Plan: {plan.title()} Premium\n"
+        f"Amount: {amount} ETB\n\n"
+        "⏳ Your payment confirmation is waiting for admin verification.\n"
+        "💎 Premium will activate only after approval."
+    )
+
+    name = f"{user.first_name or ''} {user.last_name or ''}".strip() or "Unknown"
+    username = f"@{user.username}" if user.username else "No username"
+
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ APPROVE", callback_data=f"approve_payment:{request_id}"),
+            InlineKeyboardButton("❌ REJECT", callback_data=f"reject_payment:{request_id}"),
+        ]
+    ]
+
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "💰 NEW TELEBIRR PAYMENT CONFIRMATION\n\n"
+                f"🆔 Request: #{request_id}\n"
+                f"👤 Name: {name}\n"
+                f"🔹 Username: {username}\n"
+                f"🆔 Telegram ID: {user.id}\n"
+                f"💎 Plan: {plan.title()} Premium\n"
+                f"💰 Amount: {amount} ETB\n"
+                f"🕐 Time: {now_iso()}\n\n"
+                "📩 Copied Telebirr SMS:\n\n"
+                f"{confirmation}"
+            ),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    except Exception:
+        logger.exception("Could not send payment confirmation to admin.")
+        await update.message.reply_text(
+            "⚠️ Your payment confirmation was saved, but I could not notify the admin automatically."
+        )
+
+
+# =========================================================
+# VOICE CHAT
+# =========================================================
+
+# =========================================================
+# VOICE INPUT -> TEXT CHAT
+# =========================================================
+
+async def voice_chat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Receive USER voice, let Gemini understand it, then reply with TEXT only."""
     if not update.message or not update.effective_user:
         return
 
@@ -1672,113 +1767,97 @@ async def payment_screenshot_handler(
 
     if is_blocked(user.id):
         await update.message.reply_text(
-            "🚫 Your access has been blocked."
+            "🚫 Your access to Ethio AI has been blocked."
         )
         return
 
-    plan = context.user_data.get(
-        "awaiting_payment_screenshot"
-    )
-
-    if not plan:
+    voice = update.message.voice
+    if not voice:
         return
 
-    if not update.message.photo:
-        await update.message.reply_text(
-            "📸 Please send the Telebirr payment screenshot as an image."
-        )
-        return
-
-    if has_pending_payment(user.id):
-        context.user_data.pop(
-            "awaiting_payment_screenshot",
-            None,
-        )
-        await update.message.reply_text(
-            "⏳ You already have a payment request pending review."
-        )
-        return
-
-    amount = (
-        MONTHLY_PRICE_ETB
-        if plan == "monthly"
-        else YEARLY_PRICE_ETB
-    )
-
-    photo = update.message.photo[-1]
-    file_id = photo.file_id
-
-    request_id = create_payment_request(
-        user.id,
-        plan,
-        amount,
-        file_id,
-    )
-
-    context.user_data.pop(
-        "awaiting_payment_screenshot",
-        None,
-    )
-
-    await update.message.reply_text(
-        "✅ PAYMENT SCREENSHOT RECEIVED\n\n"
-        f"Request ID: #{request_id}\n"
-        f"Plan: {plan.title()}\n"
-        f"Amount: {amount} ETB\n\n"
-        "⏳ Your payment is waiting for admin verification.\n"
-        "💎 Premium will activate only after approval."
-    )
-
-    name = (
-        f"{user.first_name or ''} "
-        f"{user.last_name or ''}"
-    ).strip()
-
-    username = (
-        f"@{user.username}"
-        if user.username
-        else "No username"
-    )
-
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "✅ APPROVE",
-                callback_data=f"approve_payment:{request_id}",
-            ),
-            InlineKeyboardButton(
-                "❌ REJECT",
-                callback_data=f"reject_payment:{request_id}",
-            ),
-        ]
-    ]
+    audio_path = None
 
     try:
-        await context.bot.send_photo(
-            chat_id=ADMIN_ID,
-            photo=file_id,
-            caption=(
-                "💰 NEW TELEBIRR PAYMENT\n\n"
-                f"🆔 Request: #{request_id}\n"
-                f"👤 Name: {name or 'Unknown'}\n"
-                f"🔹 Username: {username}\n"
-                f"🆔 Telegram ID: {user.id}\n"
-                f"💎 Plan: {plan.title()}\n"
-                f"💰 Amount: {amount} ETB\n"
-                f"🕐 Time: {now_iso()}\n\n"
-                "👇 Verify the screenshot and choose:"
-            ),
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-    except Exception:
-        logger.exception(
-            "Could not send payment request to admin."
+        await update.effective_chat.send_action(action="typing")
+
+        tg_file = await context.bot.get_file(voice.file_id)
+        fd, audio_path = tempfile.mkstemp(suffix=".ogg")
+        os.close(fd)
+        await tg_file.download_to_drive(audio_path)
+
+        # Gemini receives the USER'S voice message and understands it.
+        uploaded = await asyncio.to_thread(
+            client.files.upload,
+            file=audio_path,
+            config={"mime_type": "audio/ogg"},
         )
 
-        await update.message.reply_text(
-            "⚠️ Your screenshot was saved, but I could not notify the admin automatically.\n"
-            "Please contact the administrator."
+        prompt = """
+You are Ethio AI, an intelligent AI assistant.
+
+The attached audio is the USER speaking. Understand the user's request
+and answer it directly. Do NOT create or return audio. Return ONLY the
+normal written chat answer.
+
+Language rules:
+- Afaan Oromoo voice -> answer in Afaan Oromoo.
+- English voice -> answer in English.
+- Amharic voice -> answer in Amharic.
+- Mixed language -> respond naturally in the same style.
+
+Do not say that you cannot hear the user unless the audio is actually
+unintelligible. Do not explain the transcription process.
+"""
+
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=MODEL,
+            contents=[uploaded, prompt],
         )
+
+        answer = (
+            response.text.strip()
+            if response and response.text
+            else None
+        )
+
+        if not answer:
+            await update.message.reply_text(
+                "⚠️ I could not understand your voice message. Please try again."
+            )
+            return
+
+        # IMPORTANT: TEXT ONLY. No TTS/audio is sent back.
+        for i in range(0, len(answer), 4000):
+            await update.message.reply_text(answer[i:i + 4000])
+
+    except Exception as e:
+        logger.exception("VOICE INPUT ERROR")
+        await update.message.reply_text(
+            "⚠️ I could not process your voice message. Please try again."
+        )
+    finally:
+        if audio_path:
+            try:
+                os.remove(audio_path)
+            except OSError:
+                pass
+
+
+# =========================================================
+# TEXT MESSAGE ROUTER
+# =========================================================
+
+async def text_message_router(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    """Route copied Telebirr confirmations to payment handling; otherwise use AI chat."""
+    if context.user_data.get("awaiting_payment_confirmation"):
+        await payment_confirmation_handler(update, context)
+        return
+
+    await chat(update, context)
 
 
 # =========================================================
@@ -1862,6 +1941,9 @@ User message:
                 answer[i:i + 4000]
             )
 
+        # The USER sends voice; Ethio AI replies with CHAT/TEXT only.
+        # No AI voice output is generated here.
+
     except Exception as e:
         logger.exception("TEXT CHAT ERROR")
 
@@ -1889,12 +1971,6 @@ async def image_chat(
         await update.message.reply_text(
             "🚫 Your access to Ethio AI has been blocked."
         )
-        return
-
-    # Payment screenshot takes priority when the user is
-    # currently in the payment-upload flow.
-    if context.user_data.get("awaiting_payment_screenshot"):
-        await payment_screenshot_handler(update, context)
         return
 
     premium = is_premium(user.id)
@@ -2713,6 +2789,14 @@ def main():
         CallbackQueryHandler(button_handler)
     )
 
+    # Voice messages
+    app.add_handler(
+        MessageHandler(
+            filters.VOICE,
+            voice_chat,
+        )
+    )
+
     # Images
     app.add_handler(
         MessageHandler(
@@ -2721,11 +2805,11 @@ def main():
         )
     )
 
-    # Text chat
+    # Text messages: payment confirmation when requested, otherwise normal AI chat.
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            chat,
+            text_message_router,
         )
     )
 
