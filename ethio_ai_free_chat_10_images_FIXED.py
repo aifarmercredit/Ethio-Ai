@@ -1144,7 +1144,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"👋 Hello {user.first_name}!\n\n"
             "🤖 Welcome to Ethio AI.\n\n"
-            "💎 Your Premium is ACTIVE.\n"
+            "💳 Your Ethio AI is PRO ACTIVE. is ACTIVE.\n"
             f"📅 Expires: {expiry_text}\n\n"
             "💬 Send me a question or 🖼️ send an image."
         )
@@ -1154,14 +1154,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🤖 Welcome to Ethio AI.\n\n"
             "💬 You can chat with me for free.\n"
             f"🖼️ Free users can send up to {FREE_DAILY_IMAGE_LIMIT} images per day.\n"
-            "💎 Upgrade to Premium for unlimited image analysis.\n\n"
+            "💳 Upgrade to telebirr for unlimited image analysis.\n\n"
             "How can I help you?"
         )
 
     keyboard = [
         [
             InlineKeyboardButton(
-                "💎 Upgrade to Premium",
+                "💳 Upgrade to Telebirr",
                 callback_data="premium_menu",
             )
         ],
